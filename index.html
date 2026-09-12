@@ -41,7 +41,7 @@
 <body>
 <div class="wrap">
   <div class="top">
-    <h1>Hands-free SRS – V6 + Wiederholen + Quittung</h1>
+    <h1>Hands-free SRS – V6 + Wiederholen + Quittung + Buds Pause</h1>
     <div class="pill" id="dueCount">0 fällig</div>
   </div>
 
@@ -537,6 +537,35 @@
     }
     listening = false;
   }
+
+  // Headset/Buds Play-Pause test.
+  // This does not change the frozen speech-recognition logic.
+  function installMediaSessionControls() {
+    if (!('mediaSession' in navigator)) {
+      $('status').textContent = 'Media-Tasten werden von diesem Browser nicht unterstützt.';
+      return;
+    }
+
+    try {
+      navigator.mediaSession.setActionHandler('pause', () => {
+        $('pauseBtn').click();
+      });
+    } catch(e) {}
+
+    try {
+      navigator.mediaSession.setActionHandler('play', () => {
+        $('startBtn').click();
+      });
+    } catch(e) {}
+
+    try {
+      navigator.mediaSession.setActionHandler('stop', () => {
+        $('pauseBtn').click();
+      });
+    } catch(e) {}
+  }
+
+  installMediaSessionControls();
 
   $('startBtn').addEventListener('click', () => {
     paused = false;
