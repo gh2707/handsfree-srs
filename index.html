@@ -41,7 +41,7 @@
 <body>
 <div class="wrap">
   <div class="top">
-    <h1>Hands-free SRS – Deutsch 1–4 + Wiederholen</h1>
+    <h1>Hands-free SRS – V9 Mikro + Buds</h1>
     <div class="pill" id="dueCount">0 fällig</div>
   </div>
 
@@ -128,6 +128,11 @@
   let runningToken = 0;
   let recognition = null;
   let listening = false;
+  let recognitionAttempt = 0;
+  let recognitionTimer = null;
+  let recognitionHandled = false;
+  const RECOGNITION_WINDOW_MS = 4000;
+  const MAX_RECOGNITION_ATTEMPTS = 2;
   let reviewMode = false;
   let reviewPool = [];
 
@@ -283,7 +288,7 @@
     if (token !== runningToken) return;
 
     $('status').textContent = $('voiceRating').checked
-      ? 'Sag eins, zwei, drei oder vier …'
+      ? 'Sprich jetzt: eins, zwei, drei oder vier …'
       : 'Bewerte mit 1–4';
     if ($('voiceRating').checked) startRecognition();
   }
@@ -359,56 +364,220 @@
 
   document.querySelectorAll('[data-rate]').forEach(b => b.addEventListener('click', () => rate(Number(b.dataset.rate))));
 
+
+  function beep(freq=880, duration=90, volume=0.12) {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      const ctx = new AC();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = freq;
+      gain.gain.value = volume;
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      setTimeout(() => {
+        try { osc.stop(); } catch(e) {}
+        try { ctx.close(); } catch(e) {}
+      }, duration);
+    } catch(e) {}
+  }
+
+  function successBeep() { beep(1050, 90, 0.12); }
+  function retryBeep()   { beep(420, 120, 0.10); }
+  function skipBeep() {
+    beep(320, 90, 0.10);
+    setTimeout(() => beep(240, 120, 0.10), 130);
+  }
+
+  function clearRecognitionTimer() {
+    if (recognitionTimer) {
+      clearTimeout(recognitionTimer);
+      recognitionTimer = null;
+    }
+  }
+
+  function advanceWithoutRating() {
+    stopRecognition();
+    skipBeep();
+    $('status').textContent = 'Nicht erkannt – ohne Bewertung weiter.';
+    if (!current) return;
+
+    if (current.type === 'word') {
+      const followups = buildFollowups(current);
+      if (followups.length) {
+        queue = followups;
+        const n = queue.shift();
+        setTimeout(() => runCard(n), 450);
+        return;
+      }
+    }
+    if (current.type === 'sentence' && queue.length) {
+      const n = queue.shift();
+      setTimeout(() => runCard(n), 450);
+      return;
+    }
+    setTimeout(nextRandomWord, 450);
+  }
+
+  function retryOrSkip() {
+    clearRecognitionTimer();
+    listening = false;
+    if (paused || !$('voiceRating').checked || !current) return;
+    if (recognitionAttempt < MAX_RECOGNITION_ATTEMPTS) {
+      retryBeep();
+      $('status').textContent = 'Nicht erkannt – zweiter Versuch …';
+      setTimeout(() => startRecognition(true), 350);
+    } else {
+      advanceWithoutRating();
+    }
+  }
+
   function setupRecognition() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) {
       $('voiceInfo').innerHTML = '<span class="warn">Spracherkennung wird von diesem Browser nicht unterstützt. Die 1–4-Tasten funktionieren trotzdem.</span>';
       return;
     }
+
     recognition = new SR();
     recognition.lang = 'de-DE';
-    recognition.interimResults = false;
+    recognition.interimResults = true;
     recognition.continuous = false;
-    recognition.maxAlternatives = 5;
+    recognition.maxAlternatives = 10;
 
     recognition.onresult = e => {
-      const texts = [];
-      for (let i=0;i<e.results[0].length;i++) texts.push(e.results[0][i].transcript.toLowerCase().trim());
-      const joined = texts.join(' | ');
-      $('status').textContent = `Erkannt: ${texts[0]}`;
       const map = [
-        {r:1, re:/\b(1|eins)\b/i},
-        {r:2, re:/\b(2|zwei)\b/i},
-        {r:3, re:/\b(3|drei)\b/i},
-        {r:4, re:/\b(4|vier)\b/i}
+        {r:1, re:/(1|eins|ein)/i},
+        {r:2, re:/(2|zwei)/i},
+        {r:3, re:/(3|drei)/i},
+        {r:4, re:/(4|vier)/i}
       ];
-      const hit = map.find(x => x.re.test(joined));
-      if (hit) setTimeout(() => rate(hit.r), 150);
-      else setTimeout(startRecognition, 500);
-    };
-    recognition.onerror = e => {
-      listening = false;
-      if (!paused && $('voiceRating').checked) {
-        $('status').textContent = 'Nicht verstanden – bitte eins, zwei, drei oder vier sagen.';
-        setTimeout(startRecognition, 700);
+
+      const heard = [];
+      let hit = null;
+
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const result = e.results[i];
+        for (let j = 0; j < result.length; j++) {
+          const text = (result[j].transcript || '').toLowerCase().trim();
+          if (text) heard.push(text);
+          if (!hit) hit = map.find(x => x.re.test(text)) || null;
+        }
+      }
+
+      if (heard.length) $('status').textContent = 'Erkannt: ' + heard[0];
+
+      if (hit && !recognitionHandled) {
+        recognitionHandled = true;
+        clearRecognitionTimer();
+        successBeep();
+        stopRecognition();
+        setTimeout(() => rate(hit.r), 180);
       }
     };
-    recognition.onend = () => { listening = false; };
-    $('voiceInfo').innerHTML = '<span class="ok">Spracherkennung verfügbar. Beim ersten Start Mikrofonzugriff erlauben.</span>';
+
+    recognition.onerror = e => {
+      listening = false;
+      if (recognitionHandled) return;
+      if (e && (e.error === 'aborted')) return;
+      retryOrSkip();
+    };
+
+    recognition.onend = () => {
+      listening = false;
+      if (recognitionHandled || paused || !current) return;
+      // Chrome beendet kurze Erkennungsversuche manchmal früh.
+      // Der eigene Timer entscheidet, ob noch einmal versucht oder weitergeschaltet wird.
+    };
+
+    $('voiceInfo').innerHTML = '<span class="ok">Spracherkennung verfügbar. Zwei Versuche à maximal 4 Sekunden.</span>';
   }
 
-  function startRecognition() {
-    if (!recognition || paused || listening) return;
-    try { listening = true; recognition.start(); } catch(e) { listening = false; }
-  }
-  function stopRecognition() {
-    if (recognition && listening) {
-      try { recognition.abort(); } catch(e) {}
+  function startRecognition(isRetry=false) {
+    if (!recognition || paused || listening || !current) return;
+
+    if (!isRetry) recognitionAttempt = 0;
+    recognitionAttempt++;
+    recognitionHandled = false;
+    clearRecognitionTimer();
+
+    try {
+      listening = true;
+      recognition.start();
+      $('status').textContent = recognitionAttempt === 1
+        ? 'Sprich jetzt: eins, zwei, drei oder vier …'
+        : 'Zweiter Versuch: eins, zwei, drei oder vier …';
+
+      recognitionTimer = setTimeout(() => {
+        if (recognitionHandled) return;
+        try { recognition.abort(); } catch(e) {}
+        retryOrSkip();
+      }, RECOGNITION_WINDOW_MS);
+    } catch(e) {
       listening = false;
+      retryOrSkip();
     }
   }
 
+  function stopRecognition() {
+    clearRecognitionTimer();
+    if (recognition && listening) {
+      try { recognition.abort(); } catch(e) {}
+    }
+    listening = false;
+  }
+
+
+  // Versuch, die Headset-Play/Pause-Taste an diese Web-App zu binden.
+  // Das verbessert die Chance, dass nicht Spotify reagiert; Android/Chrome
+  // entscheiden letztlich, welche Media Session aktiv ist.
+  let mediaAnchor = null;
+
+  function ensureMediaSession() {
+    try {
+      if (!mediaAnchor) {
+        // Sehr kurze, stumme WAV-Datei als Media-Session-Anker.
+        const silenceWav =
+          'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
+        mediaAnchor = new Audio(silenceWav);
+        mediaAnchor.loop = true;
+        mediaAnchor.volume = 0;
+        mediaAnchor.setAttribute('playsinline', '');
+      }
+
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: 'Hands-free SRS',
+          artist: 'Lernmodus'
+        });
+
+        navigator.mediaSession.setActionHandler('pause', () => {
+          paused = true;
+          runningToken++;
+          stopRecognition();
+          speechSynthesis.cancel();
+          $('status').textContent = 'Pausiert';
+        });
+
+        navigator.mediaSession.setActionHandler('play', () => {
+          paused = false;
+          if (!current || $('kind').textContent === 'Fertig' || $('front').textContent === 'Start drücken') {
+            nextRandomWord();
+          } else {
+            runCard(current);
+          }
+        });
+      }
+
+      const pr = mediaAnchor.play();
+      if (pr && pr.catch) pr.catch(() => {});
+    } catch(e) {}
+  }
+
   $('startBtn').addEventListener('click', () => {
+    ensureMediaSession();
     paused = false;
     speechSynthesis.resume();
     if (!current || $('kind').textContent === 'Fertig' || $('front').textContent === 'Start drücken') nextRandomWord();
@@ -416,6 +585,7 @@
   });
 
   $('reviewBtn').addEventListener('click', () => {
+    ensureMediaSession();
     runningToken++;
     stopRecognition();
     speechSynthesis.cancel();
