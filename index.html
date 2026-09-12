@@ -41,7 +41,7 @@
 <body>
 <div class="wrap">
   <div class="top">
-    <h1>Hands-free SRS – V6 Spanische Befehle</h1>
+    <h1>Hands-free SRS – V10 kontrolliert</h1>
     <div class="pill" id="dueCount">0 fällig</div>
   </div>
 
@@ -64,6 +64,7 @@
   <div class="row">
     <button class="secondary" id="startBtn">▶ Start / Fortsetzen</button>
     <button class="secondary" id="pauseBtn">⏸ Pause</button>
+    <button class="secondary" id="reviewBtn">🔁 Alle wiederholen</button>
   </div>
 
   <details>
@@ -127,6 +128,9 @@
   let runningToken = 0;
   let recognition = null;
   let listening = false;
+  let awaitingRating = false;
+  let reviewMode = false;
+  let reviewPool = [];
 
   $('wordDelay').value = settings.wordDelay ?? 4;
   $('sentenceDelay').value = settings.sentenceDelay ?? 6;
@@ -193,6 +197,16 @@
       const key = cardKey(n.id,'word',dir,0);
       const s = getSched(key);
       if ((s.due || 0) <= now()) cards.push({note:n, type:'word', dir, key});
+    }));
+    return cards;
+  }
+
+  function allVocabCardsForReview() {
+    const dirs = $('mixDirections').checked ? ['de-es','es-de'] : ['de-es'];
+    const cards = [];
+    data.forEach(n => dirs.forEach(dir => {
+      const key = cardKey(n.id,'word',dir,0);
+      cards.push({note:n, type:'word', dir, key});
     }));
     return cards;
   }
@@ -272,7 +286,10 @@
     $('status').textContent = $('voiceRating').checked
       ? 'Sag eins, zwei, drei oder vier …'
       : 'Bewerte mit 1–4';
-    if ($('voiceRating').checked) startRecognition();
+    if ($('voiceRating').checked) {
+      awaitingRating = true;
+      startRecognition();
+    }
   }
 
   function buildFollowups(wordCard) {
@@ -289,13 +306,31 @@
   }
 
   function nextRandomWord() {
-    let due = allVocabCards();
+    if (reviewMode) {
+      if (!reviewPool.length) {
+        reviewMode = false;
+        paused = true;
+        current = null;
+        $('kind').textContent = 'Fertig';
+        $('front').textContent = 'Extra-Wiederholung beendet.';
+        $('answer').textContent = '';
+        $('status').textContent = 'SRS-Lernstand wurde nicht verändert.';
+        updateDue();
+        return;
+      }
+      current = reviewPool.pop();
+      runCard(current);
+      return;
+    }
+
+    const due = allVocabCards();
     if (!due.length) {
       paused = true;
+      current = null;
       $('kind').textContent = 'Fertig';
       $('front').textContent = 'Für jetzt nichts mehr fällig.';
       $('answer').textContent = '';
-      $('status').textContent = '';
+      $('status').textContent = 'Du kannst „Alle wiederholen“ wählen.';
       return;
     }
     current = due[Math.floor(Math.random()*due.length)];
@@ -304,8 +339,9 @@
 
   function rate(rating) {
     if (!current) return;
+    awaitingRating = false;
     stopRecognition();
-    schedule(current.key, rating);
+    if (!reviewMode) schedule(current.key, rating);
 
     if (current.type === 'word') {
       const followups = buildFollowups(current);
@@ -331,50 +367,121 @@
   function setupRecognition() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) {
-      $('voiceInfo').innerHTML = '<span class="warn">Spracherkennung wird von diesem Browser nicht unterstützt. Die 1–4-Tasten funktionieren trotzdem.</span>';
-      return;
+      $('voiceInfo').innerHTML =
+        '<span class="warn">Spracherkennung wird von diesem Browser nicht unterstützt. Die 1–4-Tasten funktionieren trotzdem.</span>';
+      return false;
     }
-    recognition = new SR();
-    recognition.lang = 'de-DE';
-    recognition.interimResults = false;
-    recognition.continuous = false;
-    recognition.maxAlternatives = 5;
+    $('voiceInfo').innerHTML =
+      '<span class="ok">Deutsche Spracherkennung verfügbar.</span>';
+    return true;
+  }
 
-    recognition.onresult = e => {
-      const texts = [];
-      for (let i=0;i<e.results[0].length;i++) texts.push(e.results[0][i].transcript.toLowerCase().trim());
-      const joined = texts.join(' | ');
-      $('status').textContent = `Erkannt: ${texts[0]}`;
-      const map = [
-        {r:1, re:/\b(eins)\b/},
-        {r:2, re:/\b(zwei)\b/},
-        {r:3, re:/\b(drei)\b/},
-        {r:4, re:/\b(vier)\b/}
-      ];
-      const hit = map.find(x => x.re.test(joined));
-      if (hit) setTimeout(() => rate(hit.r), 150);
-      else setTimeout(startRecognition, 500);
-    };
-    recognition.onerror = e => {
-      listening = false;
-      if (!paused && $('voiceRating').checked) {
-        $('status').textContent = 'Nicht verstanden – bitte eins, zwei, drei oder vier sagen.';
-        setTimeout(startRecognition, 700);
-      }
-    };
-    recognition.onend = () => { listening = false; };
-    $('voiceInfo').innerHTML = '<span class="ok">Spracherkennung verfügbar. Beim ersten Start Mikrofonzugriff erlauben.</span>';
+  function parseRating(texts) {
+    const normalized = texts
+      .map(t => (t || '').toLowerCase()
+        .replace(/[.,!?;:()[\]{}"'’`´]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim())
+      .filter(Boolean);
+
+    for (const t of normalized) {
+      const words = t.split(' ').filter(Boolean);
+      if (words.includes('1') || words.includes('eins') || words.includes('ein')) return 1;
+      if (words.includes('2') || words.includes('zwei')) return 2;
+      if (words.includes('3') || words.includes('drei')) return 3;
+      if (words.includes('4') || words.includes('vier')) return 4;
+    }
+    return null;
   }
 
   function startRecognition() {
-    if (!recognition || paused || listening) return;
-    try { listening = true; recognition.start(); } catch(e) { listening = false; }
-  }
-  function stopRecognition() {
-    if (recognition && listening) {
-      try { recognition.abort(); } catch(e) {}
+    if (paused || listening || !awaitingRating || !$('voiceRating').checked) return;
+
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) return;
+
+    // Wie beim erfolgreichen Diagnosetest wird für jeden Versuch
+    // eine frische Recognition-Sitzung erzeugt.
+    recognition = new SR();
+    recognition.lang = 'de-DE';
+    recognition.interimResults = true;
+    recognition.continuous = false;
+    recognition.maxAlternatives = 10;
+
+    let accepted = false;
+    listening = true;
+
+    recognition.onstart = () => {
+      $('status').textContent = 'Sag eins, zwei, drei oder vier …';
+    };
+
+    recognition.onresult = e => {
+      const texts = [];
+
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        for (let j = 0; j < e.results[i].length; j++) {
+          const t = e.results[i][j].transcript;
+          if (t && t.trim()) texts.push(t.trim());
+        }
+      }
+
+      if (texts.length) {
+        $('status').textContent = `Erkannt: ${texts.join(' | ')}`;
+      }
+
+      const rating = parseRating(texts);
+      if (rating !== null && !accepted) {
+        accepted = true;
+        awaitingRating = false;
+        listening = false;
+        try { recognition.stop(); } catch(e) {}
+        setTimeout(() => rate(rating), 150);
+      }
+    };
+
+    recognition.onnomatch = () => {
+      $('status').textContent = 'Nicht verstanden – ich höre gleich erneut zu …';
+    };
+
+    recognition.onerror = e => {
       listening = false;
+
+      // Bei fehlender Berechtigung nicht endlos neu starten.
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        awaitingRating = false;
+        $('status').textContent = 'Mikrofonzugriff nicht erlaubt.';
+        return;
+      }
+
+      if (awaitingRating && !paused && !accepted) {
+        $('status').textContent = 'Nicht verstanden – ich höre erneut zu …';
+      }
+    };
+
+    recognition.onend = () => {
+      listening = false;
+
+      // Solange keine gültige 1–4 erkannt wurde, automatisch erneut zuhören.
+      if (awaitingRating && !paused && !accepted && $('voiceRating').checked) {
+        setTimeout(startRecognition, 300);
+      }
+    };
+
+    try {
+      recognition.start();
+    } catch(e) {
+      listening = false;
+      if (awaitingRating && !paused) {
+        setTimeout(startRecognition, 300);
+      }
     }
+  }
+
+  function stopRecognition() {
+    if (recognition) {
+      try { recognition.abort(); } catch(e) {}
+    }
+    listening = false;
   }
 
   $('startBtn').addEventListener('click', () => {
@@ -384,8 +491,22 @@
     else runCard(current);
   });
 
+  $('reviewBtn').addEventListener('click', () => {
+    runningToken++;
+    stopRecognition();
+    speechSynthesis.cancel();
+    queue = [];
+    current = null;
+    reviewMode = true;
+    reviewPool = shuffle(allVocabCardsForReview());
+    paused = false;
+    $('status').textContent = 'Extra-Wiederholung – SRS bleibt unverändert.';
+    nextRandomWord();
+  });
+
   $('pauseBtn').addEventListener('click', () => {
     paused = true;
+    awaitingRating = false;
     runningToken++;
     stopRecognition();
     speechSynthesis.cancel();
@@ -394,7 +515,7 @@
 
   $('resetBtn').addEventListener('click', () => {
     if (!confirm('Wirklich den gesamten Lernstand zurücksetzen?')) return;
-    state = {};
+    state = {}; reviewMode=false; reviewPool=[]; awaitingRating=false;
     localStorage.removeItem(STATE_KEY);
     current = null; queue = []; paused = true; runningToken++;
     updateDue();
