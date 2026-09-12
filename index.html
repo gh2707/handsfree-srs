@@ -41,7 +41,7 @@
 <body>
 <div class="wrap">
   <div class="top">
-    <h1>Hands-free SRS – DE fließende Erkennung</h1>
+    <h1>Hands-free SRS – V6 Spanische Befehle</h1>
     <div class="pill" id="dueCount">0 fällig</div>
   </div>
 
@@ -127,7 +127,6 @@
   let runningToken = 0;
   let recognition = null;
   let listening = false;
-  let awaitingRating = false;
 
   $('wordDelay').value = settings.wordDelay ?? 4;
   $('sentenceDelay').value = settings.sentenceDelay ?? 6;
@@ -273,10 +272,7 @@
     $('status').textContent = $('voiceRating').checked
       ? 'Sag eins, zwei, drei oder vier …'
       : 'Bewerte mit 1–4';
-    if ($('voiceRating').checked) {
-      awaitingRating = true;
-      startRecognition();
-    }
+    if ($('voiceRating').checked) startRecognition();
   }
 
   function buildFollowups(wordCard) {
@@ -308,7 +304,6 @@
 
   function rate(rating) {
     if (!current) return;
-    awaitingRating = false;
     stopRecognition();
     schedule(current.key, rating);
 
@@ -336,94 +331,50 @@
   function setupRecognition() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) {
-      $('voiceInfo').innerHTML = '<span class="warn">Spracherkennung wird von diesem Browser nicht unterstützt.</span>';
+      $('voiceInfo').innerHTML = '<span class="warn">Spracherkennung wird von diesem Browser nicht unterstützt. Die 1–4-Tasten funktionieren trotzdem.</span>';
       return;
     }
-
     recognition = new SR();
     recognition.lang = 'de-DE';
-    recognition.interimResults = true;
+    recognition.interimResults = false;
     recognition.continuous = false;
-    recognition.maxAlternatives = 10;
+    recognition.maxAlternatives = 5;
 
     recognition.onresult = e => {
       const texts = [];
-
-      for (let i=e.resultIndex; i<e.results.length; i++) {
-        for (let j=0; j<e.results[i].length; j++) {
-          texts.push(e.results[i][j].transcript.toLowerCase().trim());
-        }
-      }
-
-      const normalized = texts
-        .map(t => t.replace(/[.,!?;:()[\]{}"'’`´]/g, ' ').replace(/\s+/g, ' ').trim())
-        .join(' ');
-
-      const words = normalized.split(' ').filter(Boolean);
-      let rating = null;
-
-      if (words.includes('1') || words.includes('eins') || words.includes('ein')) rating = 1;
-      else if (words.includes('2') || words.includes('zwei')) rating = 2;
-      else if (words.includes('3') || words.includes('drei')) rating = 3;
-      else if (words.includes('4') || words.includes('vier')) rating = 4;
-
-      if (rating !== null) {
-        awaitingRating = false;
-        listening = false;
-        try { recognition.stop(); } catch(e) {}
-        setTimeout(() => rate(rating), 150);
-      } else {
-        // Chrome hat Sprache gehört, aber keine gültige 1–4 geliefert.
-        // Nach Ende dieser Erkennungsrunde sofort erneut zuhören.
-        $('status').textContent = 'Bitte nochmal: eins, zwei, drei oder vier …';
-      }
+      for (let i=0;i<e.results[0].length;i++) texts.push(e.results[0][i].transcript.toLowerCase().trim());
+      const joined = texts.join(' | ');
+      $('status').textContent = `Erkannt: ${texts[0]}`;
+      const map = [
+        {r:1, re:/\b(eins)\b/},
+        {r:2, re:/\b(zwei)\b/},
+        {r:3, re:/\b(drei)\b/},
+        {r:4, re:/\b(vier)\b/}
+      ];
+      const hit = map.find(x => x.re.test(joined));
+      if (hit) setTimeout(() => rate(hit.r), 150);
+      else setTimeout(startRecognition, 500);
     };
-
     recognition.onerror = e => {
       listening = false;
-
-      // "no-speech"/"aborted" sind im Hands-free-Betrieb kein Abbruch:
-      // solange die Karte auf eine Bewertung wartet, wird neu geöffnet.
-      if (awaitingRating && !paused && $('voiceRating').checked) {
-        $('status').textContent = 'Bitte nochmal: eins, zwei, drei oder vier …';
-        setTimeout(startRecognition, 250);
-      } else {
-        $('status').textContent = `Spracherkennungsfehler: ${e.error}`;
+      if (!paused && $('voiceRating').checked) {
+        $('status').textContent = 'Nicht verstanden – bitte eins, zwei, drei oder vier sagen.';
+        setTimeout(startRecognition, 700);
       }
     };
-
-    recognition.onend = () => {
-      listening = false;
-
-      // Wichtig für flüssiges Hands-free:
-      // Browser beendet kurze Recognition-Sitzungen von selbst.
-      // Solange keine gültige Bewertung erkannt wurde, automatisch neu öffnen.
-      if (awaitingRating && !paused && $('voiceRating').checked) {
-        setTimeout(startRecognition, 250);
-      }
-    };
-
-    $('voiceInfo').innerHTML = '<span class="ok">Deutsch de-DE aktiv.</span>';
+    recognition.onend = () => { listening = false; };
+    $('voiceInfo').innerHTML = '<span class="ok">Spracherkennung verfügbar. Beim ersten Start Mikrofonzugriff erlauben.</span>';
   }
 
   function startRecognition() {
-    if (!recognition || paused || listening || !awaitingRating) return;
-    try {
-      listening = true;
-      recognition.start();
-    } catch(e) {
-      listening = false;
-      if (awaitingRating && !paused) {
-        setTimeout(startRecognition, 300);
-      }
-    }
+    if (!recognition || paused || listening) return;
+    try { listening = true; recognition.start(); } catch(e) { listening = false; }
   }
-
   function stopRecognition() {
     if (recognition && listening) {
       try { recognition.abort(); } catch(e) {}
+      listening = false;
     }
-    listening = false;
   }
 
   $('startBtn').addEventListener('click', () => {
@@ -435,7 +386,6 @@
 
   $('pauseBtn').addEventListener('click', () => {
     paused = true;
-    awaitingRating = false;
     runningToken++;
     stopRecognition();
     speechSynthesis.cancel();
@@ -446,7 +396,7 @@
     if (!confirm('Wirklich den gesamten Lernstand zurücksetzen?')) return;
     state = {};
     localStorage.removeItem(STATE_KEY);
-    current = null; queue = []; paused = true; awaitingRating = false; runningToken++;
+    current = null; queue = []; paused = true; runningToken++;
     updateDue();
     $('kind').textContent='Bereit'; $('front').textContent='Start drücken'; $('answer').textContent=''; $('status').textContent='';
   });
