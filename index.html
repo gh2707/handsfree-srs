@@ -41,7 +41,7 @@
 <body>
 <div class="wrap">
   <div class="top">
-    <h1>Hands-free SRS – V6 + Wiederholen + Quittung + aktive Mediasession</h1>
+    <h1>Hands-free SRS – V6 + Wiederholen + Quittung</h1>
     <div class="pill" id="dueCount">0 fällig</div>
   </div>
 
@@ -49,16 +49,16 @@
     <div class="kind" id="kind">Bereit</div>
     <div class="front" id="front">Start drücken</div>
     <div class="answer" id="answer"></div>
-    <div class="hint" id="hint">Bewertung: 1 = Einfach · 2 = Gut · 3 = Schwer · 4 = Nochmal</div>
+    <div class="hint" id="hint">Bewertung: uno = Einfach · dos = Gut · tres = Schwer · seis = Nochmal</div>
   </div>
 
   <div class="status" id="status"></div>
 
   <div class="controls">
-    <button class="easy" data-rate="1">1<br>Einfach</button>
-    <button class="good" data-rate="2">2<br>Gut</button>
-    <button class="hard" data-rate="3">3<br>Schwer</button>
-    <button class="again" data-rate="4">4<br>Nochmal</button>
+    <button class="easy" data-rate="1">uno<br>Einfach</button>
+    <button class="good" data-rate="2">dos<br>Gut</button>
+    <button class="hard" data-rate="3">tres<br>Schwer</button>
+    <button class="again" data-rate="4">seis<br>Nochmal</button>
   </div>
 
   <div class="row">
@@ -80,7 +80,7 @@
     <p class="small">
       Unterstützte Spaltennamen u. a.: <b>Deutsch / DE</b>, <b>Spanisch / ES</b>,
       <b>Beispielsatz Deutsch</b>, <b>Beispielsatz Spanisch</b>.
-      Weitere Satzpaare können als „Beispielsatz Deutsch 2 / Spanisch 2“, „… 3“ usw. angelegt werden.
+      Weitere Satzpaare können als „Beispielsatz Deutsch 2 / Spanisch 2“, „… 3“ usw. angelegt werden. Zusammengehörige Karten können über „Gruppe“ und „Gruppenposition“ direkt nacheinander gelernt werden.
     </p>
 
     <label>Nachdenkzeit Vokabel (Sekunden)</label>
@@ -89,7 +89,7 @@
     <label>Nachdenkzeit Beispielsatz (Sekunden)</label>
     <input id="sentenceDelay" type="number" min="0" max="30" step="1" value="6">
 
-    <label><input id="voiceRating" type="checkbox" checked> Bewertung per Sprache („eins“, „zwei“, „drei“, „vier“)</label>
+    <label><input id="voiceRating" type="checkbox" checked> Bewertung per Sprache („uno“, „dos“, „tres“, „seis“)</label>
     <label><input id="mixDirections" type="checkbox" checked> Deutsch → Spanisch und Spanisch → Deutsch mischen</label>
 
     <p class="small" id="voiceInfo"></p>
@@ -129,6 +129,7 @@
   let recognition = null;
   let listening = false;
   let ratingAttempt = 0;
+  let groupQueue = [];
   let reviewMode = false;
   let reviewPool = [];
 
@@ -363,7 +364,7 @@
     if (token !== runningToken) return;
 
     $('status').textContent = $('voiceRating').checked
-      ? 'Sag eins, zwei, drei oder vier …'
+      ? 'Sag uno, dos, tres oder seis …'
       : 'Bewerte mit 1–4';
     if ($('voiceRating').checked) startRecognition();
   }
@@ -379,6 +380,32 @@
       arr.push({note:wordCard.note, type:'sentence', dir:wordCard.dir, exIndex:i, key});
     });
     return arr;
+  }
+
+  function groupedWordCardsFor(card) {
+    const g = (card.note.group || '').trim();
+    if (!g) return [];
+    const notes = data
+      .filter(n => (n.group || '').trim() === g)
+      .sort((a,b) => (a.groupPos||0) - (b.groupPos||0));
+    return notes.map(n => ({
+      note:n,
+      type:'word',
+      dir:card.dir,
+      key:cardKey(n.id,'word',card.dir)
+    }));
+  }
+
+  function startSelectedWord(card) {
+    const grouped = groupedWordCardsFor(card);
+    if (grouped.length > 1) {
+      current = grouped.shift();
+      groupQueue = grouped;
+    } else {
+      current = card;
+      groupQueue = [];
+    }
+    runCard(current);
   }
 
   function nextRandomWord() {
@@ -409,8 +436,8 @@
       $('status').textContent = 'Du kannst „Alle wiederholen“ wählen.';
       return;
     }
-    current = due[Math.floor(Math.random()*due.length)];
-    runCard(current);
+    const selected = due[Math.floor(Math.random()*due.length)];
+    startSelectedWord(selected);
   }
 
   function rate(rating) {
@@ -430,6 +457,12 @@
 
     if (current.type === 'sentence' && queue.length) {
       const n = queue.shift();
+      setTimeout(() => runCard(n), 250);
+      return;
+    }
+
+    if (groupQueue.length) {
+      const n = groupQueue.shift();
       setTimeout(() => runCard(n), 250);
       return;
     }
@@ -538,92 +571,7 @@
     listening = false;
   }
 
-  // Aktive Media-Session für Headset-/Buds-Play/Pause.
-  // Die SpeechRecognition-Logik bleibt unverändert.
-  let mediaAnchor = null;
-
-  function createMediaAnchor() {
-    if (mediaAnchor) return mediaAnchor;
-
-    const sampleRate = 8000;
-    const seconds = 1;
-    const samples = sampleRate * seconds;
-    const buffer = new ArrayBuffer(44 + samples * 2);
-    const view = new DataView(buffer);
-
-    function writeString(offset, str) {
-      for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
-    }
-
-    writeString(0, 'RIFF');
-    view.setUint32(4, 36 + samples * 2, true);
-    writeString(8, 'WAVE');
-    writeString(12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * 2, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    writeString(36, 'data');
-    view.setUint32(40, samples * 2, true);
-
-    // Extrem leiser, aber nicht komplett stummer Ton.
-    for (let i = 0; i < samples; i++) {
-      const sample = Math.round(Math.sin(2 * Math.PI * 440 * i / sampleRate) * 2);
-      view.setInt16(44 + i * 2, sample, true);
-    }
-
-    const blob = new Blob([buffer], {type: 'audio/wav'});
-    const url = URL.createObjectURL(blob);
-
-    mediaAnchor = new Audio(url);
-    mediaAnchor.loop = true;
-    mediaAnchor.volume = 1.0;
-    mediaAnchor.preload = 'auto';
-    return mediaAnchor;
-  }
-
-  async function activateMediaSession() {
-    const audio = createMediaAnchor();
-    try {
-      await audio.play();
-      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
-    } catch(e) {}
-
-    if ('mediaSession' in navigator) {
-      try {
-        navigator.mediaSession.setActionHandler('pause', () => {
-          $('pauseBtn').click();
-        });
-      } catch(e) {}
-
-      try {
-        navigator.mediaSession.setActionHandler('play', () => {
-          $('startBtn').click();
-        });
-      } catch(e) {}
-
-      try {
-        navigator.mediaSession.setActionHandler('stop', () => {
-          $('pauseBtn').click();
-        });
-      } catch(e) {}
-    }
-  }
-
-  function pauseMediaSession() {
-    if (mediaAnchor) {
-      try { mediaAnchor.pause(); } catch(e) {}
-    }
-    if ('mediaSession' in navigator) {
-      try { navigator.mediaSession.playbackState = 'paused'; } catch(e) {}
-    }
-  }
-
   $('startBtn').addEventListener('click', () => {
-    activateMediaSession();
     paused = false;
     speechSynthesis.resume();
     if (!current || $('kind').textContent === 'Fertig' || $('front').textContent === 'Start drücken') nextRandomWord();
@@ -631,11 +579,11 @@
   });
 
   $('reviewBtn').addEventListener('click', () => {
-    activateMediaSession();
     runningToken++;
     stopRecognition();
     speechSynthesis.cancel();
     queue = [];
+    groupQueue = [];
     current = null;
     reviewMode = true;
     reviewPool = shuffle(allVocabCardsForReview());
@@ -645,7 +593,6 @@
   });
 
   $('pauseBtn').addEventListener('click', () => {
-    pauseMediaSession();
     paused = true;
     runningToken++;
     stopRecognition();
@@ -657,7 +604,7 @@
     if (!confirm('Wirklich den gesamten Lernstand zurücksetzen?')) return;
     state = {}; reviewMode=false; reviewPool=[];
     localStorage.removeItem(STATE_KEY);
-    current = null; queue = []; paused = true; runningToken++;
+    current = null; queue = []; groupQueue = []; paused = true; runningToken++;
     updateDue();
     $('kind').textContent='Bereit'; $('front').textContent='Start drücken'; $('answer').textContent=''; $('status').textContent='';
   });
@@ -705,6 +652,8 @@
     const h=rows[0];
     const deI=findHeader(h,['Deutsch','DE','German']);
     const esI=findHeader(h,['Spanisch','ES','Spanish']);
+    const groupI=findHeader(h,['Gruppe','Group']);
+    const groupPosI=findHeader(h,['Gruppenposition','Group Position','GroupPosition']);
     if(deI<0 || esI<0) throw new Error('Spalten „Deutsch/DE“ und „Spanisch/ES“ nicht gefunden.');
 
     const pairs=[];
@@ -720,7 +669,9 @@
       const de=(r[deI]||'').trim(), es=(r[esI]||'').trim();
       if(!de || !es) return;
       const examples=pairs.map(([di,si])=>({de:(r[di]||'').trim(),es:(r[si]||'').trim()})).filter(x=>x.de&&x.es);
-      out.push({id:`imp-${Date.now()}-${idx}`,de,es,examples});
+      const group=groupI>=0 ? (r[groupI]||'').trim() : '';
+      const groupPos=groupPosI>=0 ? Number((r[groupPosI]||'').trim()) || 0 : 0;
+      out.push({id:`imp-${Date.now()}-${idx}`,de,es,examples,group,groupPos});
     });
     if(!out.length) throw new Error('Keine gültigen Vokabelzeilen gefunden.');
     return out;
@@ -731,7 +682,7 @@
     try {
       const text=await f.text();
       const imported=importText(text);
-      data=imported; state={}; current=null; queue=[]; paused=true; runningToken++;
+      data=imported; state={}; current=null; queue=[]; groupQueue=[]; paused=true; runningToken++;
       save();
       $('status').textContent=`${imported.length} Vokabeln importiert.`;
       $('kind').textContent='Bereit'; $('front').textContent='Start drücken'; $('answer').textContent='';
