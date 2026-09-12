@@ -41,7 +41,7 @@
 <body>
 <div class="wrap">
   <div class="top">
-    <h1>Hands-free SRS – V6 + Wiederholen</h1>
+    <h1>Hands-free SRS – V6 + Wiederholen + Quittung</h1>
     <div class="pill" id="dueCount">0 fällig</div>
   </div>
 
@@ -128,6 +128,7 @@
   let runningToken = 0;
   let recognition = null;
   let listening = false;
+  let ratingAttempt = 0;
   let reviewMode = false;
   let reviewPool = [];
 
@@ -256,6 +257,7 @@
   }
 
   async function runCard(c) {
+    ratingAttempt = 0;
     const token = ++runningToken;
     stopRecognition();
     const txt = renderCard(c, false);
@@ -437,6 +439,25 @@
 
   document.querySelectorAll('[data-rate]').forEach(b => b.addEventListener('click', () => rate(Number(b.dataset.rate))));
 
+  function confirmationBeep() {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      const ac = new AC();
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.frequency.value = 1000;
+      gain.gain.value = 0.10;
+      osc.connect(gain);
+      gain.connect(ac.destination);
+      osc.start();
+      setTimeout(() => {
+        try { osc.stop(); } catch(e) {}
+        setTimeout(() => { try { ac.close(); } catch(e) {} }, 80);
+      }, 90);
+    } catch(e) {}
+  }
+
   function setupRecognition() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) {
@@ -461,29 +482,60 @@
         {r:4, re:/\b(seis)\b/}
       ];
       const hit = map.find(x => x.re.test(joined));
-      if (hit) setTimeout(() => rate(hit.r), 150);
-      else setTimeout(startRecognition, 500);
-    };
-    recognition.onerror = e => {
-      listening = false;
-      if (!paused && $('voiceRating').checked) {
-        $('status').textContent = 'Nicht verstanden – bitte uno, dos, tres oder seis sagen.';
-        setTimeout(startRecognition, 700);
+
+      if (hit) {
+        ratingAttempt = 0;
+        confirmationBeep();
+        setTimeout(() => rate(hit.r), 180);
+      } else {
+        listening = false;
+        if (ratingAttempt < 2) {
+          setTimeout(startRecognition, 500);
+        } else {
+          ratingAttempt = 0;
+          $('status').textContent = 'Zweimal nicht erkannt – Karte wird übersprungen.';
+          setTimeout(nextRandomWord, 500);
+        }
       }
     };
+
+    recognition.onerror = e => {
+      listening = false;
+      if (paused || !$('voiceRating').checked) return;
+
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        $('status').textContent = 'Mikrofonzugriff nicht erlaubt.';
+        return;
+      }
+
+      if (ratingAttempt < 2) {
+        setTimeout(startRecognition, 500);
+      } else {
+        ratingAttempt = 0;
+        $('status').textContent = 'Zweimal nicht erkannt – Karte wird übersprungen.';
+        setTimeout(nextRandomWord, 500);
+      }
+    };
+
     recognition.onend = () => { listening = false; };
-    $('voiceInfo').innerHTML = '<span class="ok">Spracherkennung verfügbar. Beim ersten Start Mikrofonzugriff erlauben.</span>';
   }
 
   function startRecognition() {
-    if (!recognition || paused || listening) return;
-    try { listening = true; recognition.start(); } catch(e) { listening = false; }
+    if (paused || listening || !$('voiceRating').checked || !recognition) return;
+    ratingAttempt++;
+    listening = true;
+    $('status').textContent = ratingAttempt === 1
+      ? 'Sag uno, dos, tres oder seis …'
+      : 'Nochmal: uno, dos, tres oder seis …';
+    try { recognition.start(); }
+    catch(e) { listening = false; }
   }
+
   function stopRecognition() {
     if (recognition && listening) {
       try { recognition.abort(); } catch(e) {}
-      listening = false;
     }
+    listening = false;
   }
 
   $('startBtn').addEventListener('click', () => {
