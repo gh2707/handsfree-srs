@@ -41,7 +41,7 @@
 <body>
 <div class="wrap">
   <div class="top">
-    <h1>Hands-free SRS – DE Diagnose-Erkennung</h1>
+    <h1>Hands-free SRS – DE Bewertung Fix</h1>
     <div class="pill" id="dueCount">0 fällig</div>
   </div>
 
@@ -347,19 +347,30 @@
           texts.push(e.results[i][j].transcript.toLowerCase().trim());
         }
       }
+
       const joined = texts.join(' | ');
       $('status').textContent = `Erkannt: ${joined}`;
 
+      // Robust auswerten: Satzzeichen entfernen und alle erkannten Varianten prüfen.
+      const normalized = texts
+        .map(t => t.replace(/[.,!?;:()[\]{}"'’`´]/g, ' ').replace(/\s+/g, ' ').trim())
+        .join(' ');
+
+      const words = normalized.split(' ').filter(Boolean);
       let rating = null;
-      for (const t of texts) {
-        if (/^(1|eins)$/.test(t)) { rating=1; break; }
-        if (/^(2|zwei)$/.test(t)) { rating=2; break; }
-        if (/^(3|drei)$/.test(t)) { rating=3; break; }
-        if (/^(4|vier)$/.test(t)) { rating=4; break; }
-      }
+
+      if (words.includes('1') || words.includes('eins') || words.includes('ein')) rating = 1;
+      else if (words.includes('2') || words.includes('zwei')) rating = 2;
+      else if (words.includes('3') || words.includes('drei')) rating = 3;
+      else if (words.includes('4') || words.includes('vier')) rating = 4;
+
       if (rating !== null) {
+        // Sichtbare Bestätigung, bevor die nächste Karte startet.
+        const labels = {1:'Einfach', 2:'Gut', 3:'Schwer', 4:'Nochmal'};
+        $('status').textContent = `Bewertung ${rating}: ${labels[rating]}`;
+        listening = false;
         try { recognition.stop(); } catch(e) {}
-        setTimeout(() => rate(rating), 150);
+        setTimeout(() => rate(rating), 400);
       }
     };
     recognition.onerror = e => {
