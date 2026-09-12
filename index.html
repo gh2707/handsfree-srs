@@ -41,7 +41,7 @@
 <body>
 <div class="wrap">
   <div class="top">
-    <h1>Hands-free SRS – V6 Spanische Befehle</h1>
+    <h1>Hands-free SRS – V6 Test 1 2 3 4</h1>
     <div class="pill" id="dueCount">0 fällig</div>
   </div>
 
@@ -270,7 +270,7 @@
     if (token !== runningToken) return;
 
     $('status').textContent = $('voiceRating').checked
-      ? 'Sag uno, dos, tres oder seis …'
+      ? 'Sag uno, dos, tres oder cuatro …'
       : 'Bewerte mit 1–4';
     if ($('voiceRating').checked) startRecognition();
   }
@@ -349,7 +349,7 @@
         {r:1, re:/\b(uno)\b/},
         {r:2, re:/\b(dos)\b/},
         {r:3, re:/\b(tres)\b/},
-        {r:4, re:/\b(seis)\b/}
+        {r:4, re:/\b(cuatro)\b/}
       ];
       const hit = map.find(x => x.re.test(joined));
       if (hit) setTimeout(() => rate(hit.r), 150);
@@ -358,7 +358,7 @@
     recognition.onerror = e => {
       listening = false;
       if (!paused && $('voiceRating').checked) {
-        $('status').textContent = 'Nicht verstanden – bitte uno, dos, tres oder seis sagen.';
+        $('status').textContent = 'Nicht verstanden – bitte uno, dos, tres oder cuatro sagen.';
         setTimeout(startRecognition, 700);
       }
     };
