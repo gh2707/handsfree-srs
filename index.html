@@ -1,493 +1,107 @@
 <!doctype html>
 <html lang="de">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <meta name="theme-color" content="#111827" />
-  <title>Hands-free SRS</title>
-  <link rel="manifest" href="manifest.webmanifest">
-  <style>
-    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color-scheme: light dark; }
-    * { box-sizing: border-box; }
-    body { margin: 0; background:#0b1020; color:#f8fafc; }
-    .wrap { max-width: 760px; margin: 0 auto; padding: 18px; min-height:100vh; display:flex; flex-direction:column; gap:14px; }
-    .top { display:flex; justify-content:space-between; align-items:center; gap:10px; }
-    h1 { font-size:1.15rem; margin:0; }
-    .pill { background:#1f2937; border-radius:999px; padding:6px 10px; font-size:.85rem; }
-    .card { flex:1; min-height:370px; background:#111827; border:1px solid #334155; border-radius:22px; padding:24px;
-            display:flex; flex-direction:column; justify-content:center; align-items:center; text-align:center; box-shadow:0 8px 30px rgba(0,0,0,.25); }
-    .kind { color:#94a3b8; text-transform:uppercase; letter-spacing:.08em; font-size:.78rem; margin-bottom:16px; }
-    .front { font-size:clamp(2rem,7vw,4rem); font-weight:750; line-height:1.08; }
-    .answer { margin-top:28px; font-size:clamp(1.5rem,5vw,2.6rem); color:#cbd5e1; line-height:1.2; }
-    .hint { margin-top:22px; color:#94a3b8; font-size:.95rem; }
-    .status { min-height:28px; text-align:center; color:#cbd5e1; }
-    .controls { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
-    button, .filelabel { border:0; border-radius:14px; padding:13px 10px; font-weight:700; font-size:.95rem; cursor:pointer; }
-    .again { background:#7f1d1d; color:#fff; } .hard { background:#9a3412; color:#fff; }
-    .good { background:#166534; color:#fff; } .easy { background:#075985; color:#fff; }
-    .secondary { background:#1f2937; color:#fff; border:1px solid #475569; }
-    .row { display:flex; gap:8px; flex-wrap:wrap; }
-    .row > * { flex:1; min-width:150px; }
-    details { background:#111827; border:1px solid #334155; border-radius:16px; padding:14px; }
-    summary { cursor:pointer; font-weight:700; }
-    label { display:block; margin-top:12px; color:#cbd5e1; font-size:.9rem; }
-    input[type=number] { width:100%; padding:10px; border-radius:10px; border:1px solid #475569; background:#0f172a; color:#fff; }
-    input[type=file] { display:none; }
-    .filelabel { display:inline-block; text-align:center; background:#1f2937; border:1px solid #475569; }
-    .small { font-size:.84rem; color:#94a3b8; line-height:1.4; }
-    .ok { color:#86efac; } .warn { color:#fbbf24; }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Spracherkennung Diagnose</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:760px;margin:20px auto;padding:0 16px}
+button{font-size:20px;padding:14px 18px;margin:6px}
+#state{font-size:22px;font-weight:700;margin:18px 0}
+#heard{font-size:28px;margin:16px 0;min-height:42px}
+pre{white-space:pre-wrap;background:#f3f3f3;padding:12px;border-radius:8px;min-height:180px}
+</style>
 </head>
 <body>
-<div class="wrap">
-  <div class="top">
-    <h1>Hands-free SRS – Referenz V6 Deutsch</h1>
-    <div class="pill" id="dueCount">0 fällig</div>
-  </div>
+<h1>Spracherkennung Diagnose</h1>
+<p>Auf dem Samsung in <b>Google Chrome</b> testen.</p>
 
-  <div class="card">
-    <div class="kind" id="kind">Bereit</div>
-    <div class="front" id="front">Start drücken</div>
-    <div class="answer" id="answer"></div>
-    <div class="hint" id="hint">Bewertung: 1 = Einfach · 2 = Gut · 3 = Schwer · 4 = Nochmal</div>
-  </div>
+<button onclick="startTest('de-DE')">Deutsch testen</button>
+<button onclick="startTest('es-ES')">Spanisch testen</button>
+<button onclick="clearLog()">Log löschen</button>
 
-  <div class="status" id="status"></div>
-
-  <div class="controls">
-    <button class="easy" data-rate="1">1<br>Einfach</button>
-    <button class="good" data-rate="2">2<br>Gut</button>
-    <button class="hard" data-rate="3">3<br>Schwer</button>
-    <button class="again" data-rate="4">4<br>Nochmal</button>
-  </div>
-
-  <div class="row">
-    <button class="secondary" id="startBtn">▶ Start / Fortsetzen</button>
-    <button class="secondary" id="pauseBtn">⏸ Pause</button>
-  </div>
-
-  <details>
-    <summary>Vokabeln & Einstellungen</summary>
-
-    <div class="row" style="margin-top:12px">
-      <label class="filelabel">CSV/TSV importieren
-        <input id="fileInput" type="file" accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values,text/plain">
-      </label>
-      <button class="secondary" id="resetBtn">Lernstand zurücksetzen</button>
-    </div>
-
-    <p class="small">
-      Unterstützte Spaltennamen u. a.: <b>Deutsch / DE</b>, <b>Spanisch / ES</b>,
-      <b>Beispielsatz Deutsch</b>, <b>Beispielsatz Spanisch</b>.
-      Weitere Satzpaare können als „Beispielsatz Deutsch 2 / Spanisch 2“, „… 3“ usw. angelegt werden.
-    </p>
-
-    <label>Nachdenkzeit Vokabel (Sekunden)</label>
-    <input id="wordDelay" type="number" min="0" max="20" step="1" value="4">
-
-    <label>Nachdenkzeit Beispielsatz (Sekunden)</label>
-    <input id="sentenceDelay" type="number" min="0" max="30" step="1" value="6">
-
-    <label><input id="voiceRating" type="checkbox" checked> Bewertung per Sprache („eins“, „zwei“, „drei“, „vier“)</label>
-    <label><input id="mixDirections" type="checkbox" checked> Deutsch → Spanisch und Spanisch → Deutsch mischen</label>
-
-    <p class="small" id="voiceInfo"></p>
-  </details>
-</div>
+<div id="state">Bereit</div>
+<div id="heard"></div>
+<pre id="log"></pre>
 
 <script>
-(() => {
-  const $ = id => document.getElementById(id);
-  const STATE_KEY = 'handsfree-srs-state-v1';
-  const DATA_KEY = 'handsfree-srs-data-v1';
-  const SETTINGS_KEY = 'handsfree-srs-settings-v1';
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null;
+let timer = null;
 
-  const demo = [
-    {id:'demo1', de:'erfordern', es:'requerir', examples:[
-      {de:'Diese Aufgabe erfordert viel Geduld.', es:'Esta tarea requiere mucha paciencia.'}
-    ]},
-    {id:'demo2', de:'jemanden ausnutzen', es:'aprovecharse de alguien', examples:[
-      {de:'Man darf andere Menschen nicht ausnutzen.', es:'No se debe aprovechar de otras personas.'}
-    ]},
-    {id:'demo3', de:'vor etwas fliehen', es:'escapar de algo', examples:[
-      {de:'Er versuchte, vor der Gefahr zu fliehen.', es:'Intentó escapar del peligro.'}
-    ]},
-    {id:'demo4', de:'umfassen, abdecken', es:'abarcar', examples:[]},
-    {id:'demo5', de:'Bescheid sagen', es:'avisar', examples:[
-      {de:'Sag mir Bescheid, wenn du Zeit hast.', es:'Avísame cuando tengas tiempo.'}
-    ]}
-  ];
-
-  let data = JSON.parse(localStorage.getItem(DATA_KEY) || 'null') || demo;
-  let state = JSON.parse(localStorage.getItem(STATE_KEY) || '{}');
-  let settings = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
-  let queue = [];
-  let current = null;
-  let paused = true;
-  let runningToken = 0;
-  let recognition = null;
-  let listening = false;
-
-  $('wordDelay').value = settings.wordDelay ?? 4;
-  $('sentenceDelay').value = settings.sentenceDelay ?? 6;
-  $('voiceRating').checked = settings.voiceRating ?? true;
-  $('mixDirections').checked = settings.mixDirections ?? true;
-
-  function save() {
-    settings = {
-      wordDelay: Number($('wordDelay').value || 4),
-      sentenceDelay: Number($('sentenceDelay').value || 6),
-      voiceRating: $('voiceRating').checked,
-      mixDirections: $('mixDirections').checked
-    };
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-    localStorage.setItem(STATE_KEY, JSON.stringify(state));
-    localStorage.setItem(DATA_KEY, JSON.stringify(data));
-    updateDue();
+function ts() {
+  return new Date().toLocaleTimeString();
+}
+function log(msg) {
+  const el = document.getElementById('log');
+  el.textContent += `[${ts()}] ${msg}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+function state(msg) {
+  document.getElementById('state').textContent = msg;
+  log(msg);
+}
+function clearLog() {
+  document.getElementById('log').textContent = '';
+  document.getElementById('heard').textContent = '';
+  document.getElementById('state').textContent = 'Bereit';
+}
+function stopRec() {
+  if (timer) { clearTimeout(timer); timer = null; }
+  if (rec) {
+    try { rec.stop(); } catch(e) {}
+  }
+}
+function startTest(lang) {
+  if (!SR) {
+    state('SpeechRecognition wird von diesem Browser nicht unterstützt.');
+    return;
   }
 
-  ['wordDelay','sentenceDelay','voiceRating','mixDirections'].forEach(id => $(id).addEventListener('change', save));
+  stopRec();
+  document.getElementById('heard').textContent = '';
+  rec = new SR();
+  rec.lang = lang;
+  rec.interimResults = true;
+  rec.continuous = false;
+  rec.maxAlternatives = 10;
 
-  function now(){ return Date.now(); }
-  function day(ms){ return ms * 86400000; }
+  log('--- Neuer Test: ' + lang + ' ---');
 
-  function cardKey(noteId, type, dir, exIndex=0) {
-    return `${noteId}|${type}|${dir}|${exIndex}`;
-  }
+  rec.onstart = () => state('onstart – Erkennung gestartet');
+  rec.onaudiostart = () => state('onaudiostart – Mikrofon liefert Audio');
+  rec.onsoundstart = () => state('onsoundstart – Geräusch erkannt');
+  rec.onspeechstart = () => state('onspeechstart – Sprache erkannt');
 
-  function getSched(key) {
-    if (!state[key]) state[key] = {due:0, intervalDays:0, reps:0, lapses:0, lastRating:0};
-    return state[key];
-  }
-
-  function schedule(key, rating) {
-    const s = getSched(key);
-    let days = s.intervalDays || 0;
-
-    if (rating === 1) { // Einfach
-      days = days <= 0 ? 4 : Math.max(4, days * 3.5);
-      s.intervalDays = days;
-      s.due = now() + day(days);
-    } else if (rating === 2) { // Gut
-      days = days <= 0 ? 1 : Math.max(1, days * 2.5);
-      s.intervalDays = days;
-      s.due = now() + day(days);
-    } else if (rating === 3) { // Schwer
-      days = days <= 0 ? 1 : Math.max(1, days * 1.2);
-      s.intervalDays = days;
-      s.due = now() + day(days);
-    } else if (rating === 4) { // Nochmal
-      s.due = now() + 10*60*1000;
-      s.intervalDays = 0;
-      s.lapses++;
-    }
-    s.reps++;
-    s.lastRating = rating;
-    save();
-  }
-
-  function allVocabCards() {
-    const dirs = $('mixDirections').checked ? ['de-es','es-de'] : ['de-es'];
-    const cards = [];
-    data.forEach(n => dirs.forEach(dir => {
-      const key = cardKey(n.id,'word',dir,0);
-      const s = getSched(key);
-      if ((s.due || 0) <= now()) cards.push({note:n, type:'word', dir, key});
-    }));
-    return cards;
-  }
-
-  function shuffle(a) {
-    for(let i=a.length-1;i>0;i--){
-      const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]];
-    }
-    return a;
-  }
-
-  function updateDue() {
-    const n = allVocabCards().length;
-    $('dueCount').textContent = `${n} fällig`;
-  }
-
-  function speak(text, lang) {
-    return new Promise(resolve => {
-      if (!text) return resolve();
-      speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang = lang;
-      u.rate = 0.92;
-      u.onend = () => resolve();
-      u.onerror = () => resolve();
-      speechSynthesis.speak(u);
-    });
-  }
-
-  function sleep(ms, token) {
-    return new Promise(resolve => {
-      const step = () => {
-        if (token !== runningToken) return resolve(false);
-        if (!paused) return setTimeout(() => resolve(true), ms);
-        setTimeout(step, 150);
-      };
-      step();
-    });
-  }
-
-  function renderCard(c, showAnswer=false) {
-    current = c;
-    const isDE = c.dir === 'de-es';
-    const label = c.type === 'word' ? 'Vokabel' : `Beispielsatz ${c.exIndex+1}`;
-    $('kind').textContent = `${label} · ${isDE ? 'Deutsch → Spanisch' : 'Spanisch → Deutsch'}`;
-    let front, answer;
-    if (c.type === 'word') {
-      front = isDE ? c.note.de : c.note.es;
-      answer = isDE ? c.note.es : c.note.de;
-    } else {
-      const ex = c.note.examples[c.exIndex];
-      front = isDE ? ex.de : ex.es;
-      answer = isDE ? ex.es : ex.de;
-    }
-    $('front').textContent = front;
-    $('answer').textContent = showAnswer ? answer : '';
-    return {front, answer, frontLang:isDE?'de-DE':'es-ES', answerLang:isDE?'es-ES':'de-DE'};
-  }
-
-  async function runCard(c) {
-    const token = ++runningToken;
-    stopRecognition();
-    const txt = renderCard(c, false);
-    $('status').textContent = 'Frage';
-    await speak(txt.front, txt.frontLang);
-    if (token !== runningToken) return;
-
-    const delay = c.type === 'word' ? Number($('wordDelay').value)*1000 : Number($('sentenceDelay').value)*1000;
-    const ok = await sleep(delay, token);
-    if (!ok || token !== runningToken) return;
-
-    renderCard(c, true);
-    $('status').textContent = 'Antwort';
-    await speak(txt.answer, txt.answerLang);
-    if (token !== runningToken) return;
-
-    $('status').textContent = $('voiceRating').checked
-      ? 'Sag eins, zwei, drei oder vier …'
-      : 'Bewerte mit 1–4';
-    if ($('voiceRating').checked) startRecognition();
-  }
-
-  function buildFollowups(wordCard) {
-    const arr = [];
-    (wordCard.note.examples || []).forEach((ex, i) => {
-      if (!ex.de || !ex.es) return;
-      const key = cardKey(wordCard.note.id,'sentence',wordCard.dir,i);
-      const s = getSched(key);
-      // Der Satz gehört kontextuell zur Vokabel. Er folgt immer direkt,
-      // auch wenn sein eigener SRS-Termin noch nicht fällig ist.
-      arr.push({note:wordCard.note, type:'sentence', dir:wordCard.dir, exIndex:i, key});
-    });
-    return arr;
-  }
-
-  function nextRandomWord() {
-    let due = allVocabCards();
-    if (!due.length) {
-      paused = true;
-      $('kind').textContent = 'Fertig';
-      $('front').textContent = 'Für jetzt nichts mehr fällig.';
-      $('answer').textContent = '';
-      $('status').textContent = '';
-      return;
-    }
-    current = due[Math.floor(Math.random()*due.length)];
-    runCard(current);
-  }
-
-  function rate(rating) {
-    if (!current) return;
-    stopRecognition();
-    schedule(current.key, rating);
-
-    if (current.type === 'word') {
-      const followups = buildFollowups(current);
-      if (followups.length) {
-        queue = followups;
-        const n = queue.shift();
-        setTimeout(() => runCard(n), 250);
-        return;
+  rec.onresult = (e) => {
+    const parts = [];
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      for (let j = 0; j < e.results[i].length; j++) {
+        parts.push(e.results[i][j].transcript);
       }
     }
+    const text = parts.join(' | ');
+    document.getElementById('heard').textContent = 'Erkannt: ' + text;
+    log('onresult: ' + text);
+  };
 
-    if (current.type === 'sentence' && queue.length) {
-      const n = queue.shift();
-      setTimeout(() => runCard(n), 250);
-      return;
-    }
+  rec.onnomatch = () => state('onnomatch – Sprache gehört, aber nichts zugeordnet');
+  rec.onerror = (e) => state('onerror: ' + e.error + (e.message ? ' – ' + e.message : ''));
+  rec.onspeechend = () => state('onspeechend – Sprache beendet');
+  rec.onsoundend = () => state('onsoundend – Geräusch beendet');
+  rec.onaudioend = () => state('onaudioend – Audio beendet');
+  rec.onend = () => state('onend – Erkennung beendet');
 
-    setTimeout(nextRandomWord, 250);
+  try {
+    rec.start();
+    timer = setTimeout(() => {
+      log('6-Sekunden-Limit erreicht → stop()');
+      try { rec.stop(); } catch(e) {}
+    }, 6000);
+  } catch(e) {
+    state('Startfehler: ' + e);
   }
-
-  document.querySelectorAll('[data-rate]').forEach(b => b.addEventListener('click', () => rate(Number(b.dataset.rate))));
-
-  function setupRecognition() {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) {
-      $('voiceInfo').innerHTML = '<span class="warn">Spracherkennung wird von diesem Browser nicht unterstützt. Die 1–4-Tasten funktionieren trotzdem.</span>';
-      return;
-    }
-    recognition = new SR();
-    recognition.lang = 'de-DE';
-    recognition.interimResults = false;
-    recognition.continuous = false;
-    recognition.maxAlternatives = 5;
-
-    recognition.onresult = e => {
-      const texts = [];
-      for (let i=0;i<e.results[0].length;i++) texts.push(e.results[0][i].transcript.toLowerCase().trim());
-      const joined = texts.join(' | ');
-      $('status').textContent = `Erkannt: ${texts[0]}`;
-      const map = [
-        {r:1, re:/\b(1|eins)\b/i},
-        {r:2, re:/\b(2|zwei)\b/i},
-        {r:3, re:/\b(3|drei)\b/i},
-        {r:4, re:/\b(4|vier)\b/i}
-      ];
-      const hit = map.find(x => x.re.test(joined));
-      if (hit) setTimeout(() => rate(hit.r), 150);
-      else setTimeout(startRecognition, 500);
-    };
-    recognition.onerror = e => {
-      listening = false;
-      if (!paused && $('voiceRating').checked) {
-        $('status').textContent = 'Nicht verstanden – bitte eins, zwei, drei oder vier sagen.';
-        setTimeout(startRecognition, 700);
-      }
-    };
-    recognition.onend = () => { listening = false; };
-    $('voiceInfo').innerHTML = '<span class="ok">Spracherkennung verfügbar. Beim ersten Start Mikrofonzugriff erlauben.</span>';
-  }
-
-  function startRecognition() {
-    if (!recognition || paused || listening) return;
-    try { listening = true; recognition.start(); } catch(e) { listening = false; }
-  }
-  function stopRecognition() {
-    if (recognition && listening) {
-      try { recognition.abort(); } catch(e) {}
-      listening = false;
-    }
-  }
-
-  $('startBtn').addEventListener('click', () => {
-    paused = false;
-    speechSynthesis.resume();
-    if (!current || $('kind').textContent === 'Fertig' || $('front').textContent === 'Start drücken') nextRandomWord();
-    else runCard(current);
-  });
-
-  $('pauseBtn').addEventListener('click', () => {
-    paused = true;
-    runningToken++;
-    stopRecognition();
-    speechSynthesis.cancel();
-    $('status').textContent = 'Pausiert';
-  });
-
-  $('resetBtn').addEventListener('click', () => {
-    if (!confirm('Wirklich den gesamten Lernstand zurücksetzen?')) return;
-    state = {};
-    localStorage.removeItem(STATE_KEY);
-    current = null; queue = []; paused = true; runningToken++;
-    updateDue();
-    $('kind').textContent='Bereit'; $('front').textContent='Start drücken'; $('answer').textContent=''; $('status').textContent='';
-  });
-
-  function detectDelimiter(text) {
-    const first = text.split(/\r?\n/).find(x => x.trim()) || '';
-    const counts = { '\t':(first.match(/\t/g)||[]).length, ';':(first.match(/;/g)||[]).length, ',':(first.match(/,/g)||[]).length };
-    return Object.entries(counts).sort((a,b)=>b[1]-a[1])[0][0];
-  }
-
-  function parseDelimited(text, delim) {
-    const rows=[]; let row=[], field='', q=false;
-    for(let i=0;i<text.length;i++){
-      const ch=text[i], next=text[i+1];
-      if(ch==='"'){
-        if(q && next==='"'){ field+='"'; i++; }
-        else q=!q;
-      } else if(ch===delim && !q){ row.push(field); field=''; }
-      else if((ch==='\n' || ch==='\r') && !q){
-        if(ch==='\r' && next==='\n') i++;
-        row.push(field); field='';
-        if(row.some(x=>x.trim()!=='')) rows.push(row);
-        row=[];
-      } else field+=ch;
-    }
-    row.push(field);
-    if(row.some(x=>x.trim()!=='')) rows.push(row);
-    return rows;
-  }
-
-  function norm(s){ return (s||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' '); }
-
-  function findHeader(headers, candidates) {
-    const hs=headers.map(norm);
-    for (const c of candidates) {
-      const i=hs.indexOf(norm(c)); if(i>=0) return i;
-    }
-    return -1;
-  }
-
-  function importText(text) {
-    const delim=detectDelimiter(text);
-    const rows=parseDelimited(text,delim);
-    if(rows.length<2) throw new Error('Keine Datenzeilen gefunden.');
-    const h=rows[0];
-    const deI=findHeader(h,['Deutsch','DE','German']);
-    const esI=findHeader(h,['Spanisch','ES','Spanish']);
-    if(deI<0 || esI<0) throw new Error('Spalten „Deutsch/DE“ und „Spanisch/ES“ nicht gefunden.');
-
-    const pairs=[];
-    for(let n=1;n<=10;n++){
-      const suffix=n===1?'':` ${n}`;
-      const di=findHeader(h,[`Beispielsatz Deutsch${suffix}`,`Satz Deutsch${suffix}`,`Beispiel DE${suffix}`]);
-      const si=findHeader(h,[`Beispielsatz Spanisch${suffix}`,`Satz Spanisch${suffix}`,`Beispiel ES${suffix}`]);
-      if(di>=0 && si>=0) pairs.push([di,si]);
-    }
-
-    const out=[];
-    rows.slice(1).forEach((r,idx)=>{
-      const de=(r[deI]||'').trim(), es=(r[esI]||'').trim();
-      if(!de || !es) return;
-      const examples=pairs.map(([di,si])=>({de:(r[di]||'').trim(),es:(r[si]||'').trim()})).filter(x=>x.de&&x.es);
-      out.push({id:`imp-${Date.now()}-${idx}`,de,es,examples});
-    });
-    if(!out.length) throw new Error('Keine gültigen Vokabelzeilen gefunden.');
-    return out;
-  }
-
-  $('fileInput').addEventListener('change', async e => {
-    const f=e.target.files[0]; if(!f) return;
-    try {
-      const text=await f.text();
-      const imported=importText(text);
-      data=imported; state={}; current=null; queue=[]; paused=true; runningToken++;
-      save();
-      $('status').textContent=`${imported.length} Vokabeln importiert.`;
-      $('kind').textContent='Bereit'; $('front').textContent='Start drücken'; $('answer').textContent='';
-    } catch(err) {
-      $('status').textContent='Importfehler: '+err.message;
-    }
-    e.target.value='';
-  });
-
-  setupRecognition();
-  updateDue();
-  save();
-
-  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-    navigator.serviceWorker.register('./sw.js').catch(()=>{});
-  }
-})();
+}
 </script>
 </body>
 </html>
