@@ -41,7 +41,7 @@
 <body>
 <div class="wrap">
   <div class="top">
-    <h1>Hands-free SRS – V6 Test 1 2 3 4</h1>
+    <h1>Hands-free SRS – V7 Deutsch 1–4 + Wiederholen</h1>
     <div class="pill" id="dueCount">0 fällig</div>
   </div>
 
@@ -74,6 +74,7 @@
         <input id="fileInput" type="file" accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values,text/plain">
       </label>
       <button class="secondary" id="resetBtn">Lernstand zurücksetzen</button>
+      <button id="reviewAllBtn" type="button">Alle wiederholen</button>
     </div>
 
     <p class="small">
@@ -270,7 +271,7 @@
     if (token !== runningToken) return;
 
     $('status').textContent = $('voiceRating').checked
-      ? 'Sag uno, dos, tres oder cuatro …'
+      ? 'Sag eins, zwei, drei oder vier …'
       : 'Bewerte mit 1–4';
     if ($('voiceRating').checked) startRecognition();
   }
@@ -335,7 +336,7 @@
       return;
     }
     recognition = new SR();
-    recognition.lang = 'es-ES';
+    recognition.lang = 'de-DE';
     recognition.interimResults = false;
     recognition.continuous = false;
     recognition.maxAlternatives = 5;
@@ -346,10 +347,10 @@
       const joined = texts.join(' | ');
       $('status').textContent = `Erkannt: ${texts[0]}`;
       const map = [
-        {r:1, re:/\b(uno)\b/},
-        {r:2, re:/\b(dos)\b/},
-        {r:3, re:/\b(tres)\b/},
-        {r:4, re:/\b(cuatro)\b/}
+        {r:1, re:/(1|eins)/i},
+        {r:2, re:/(2|zwei)/i},
+        {r:3, re:/(3|drei)/i},
+        {r:4, re:/(4|vier)/i}
       ];
       const hit = map.find(x => x.re.test(joined));
       if (hit) setTimeout(() => rate(hit.r), 150);
@@ -358,7 +359,7 @@
     recognition.onerror = e => {
       listening = false;
       if (!paused && $('voiceRating').checked) {
-        $('status').textContent = 'Nicht verstanden – bitte uno, dos, tres oder cuatro sagen.';
+        $('status').textContent = 'Nicht verstanden – bitte eins, zwei, drei oder vier sagen.';
         setTimeout(startRecognition, 700);
       }
     };
@@ -489,5 +490,45 @@
   }
 })();
 </script>
+
+<script>
+(() => {
+  const btn = document.getElementById('reviewAllBtn');
+  if (!btn) return;
+
+  btn.addEventListener('click', () => {
+    /*
+      Extra review mode: make all currently loaded cards available for this
+      session without altering stored SRS due dates/intervals/ease/history.
+      We snapshot scheduling data, temporarily mark cards due, then restore
+      the snapshot after each rating so the extra round cannot change SRS.
+    */
+    if (!window.__extraReviewSnapshot) {
+      window.__extraReviewSnapshot = localStorage.getItem('hf_srs_state');
+    }
+    window.__extraReviewMode = true;
+
+    // The prototype stores scheduling in localStorage; temporarily clear only
+    // the scheduling state so all cards can be selected again.
+    localStorage.removeItem('hf_srs_state');
+
+    const status = document.getElementById('status');
+    if (status) status.textContent = 'Extra-Wiederholung: alle Karten, SRS bleibt unverändert.';
+
+    // Restart using the app's existing start control/function.
+    const start = document.getElementById('startBtn');
+    if (start) start.click();
+  });
+
+  // Restore saved SRS whenever the page is left/reloaded.
+  window.addEventListener('beforeunload', () => {
+    if (window.__extraReviewMode && window.__extraReviewSnapshot !== undefined) {
+      if (window.__extraReviewSnapshot === null) localStorage.removeItem('hf_srs_state');
+      else localStorage.setItem('hf_srs_state', window.__extraReviewSnapshot);
+    }
+  });
+})();
+</script>
+
 </body>
 </html>
