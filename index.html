@@ -449,10 +449,10 @@
 
     recognition.onresult = e => {
       const map = [
-        {r:1, re:/(1|eins|ein)/i},
-        {r:2, re:/(2|zwei)/i},
-        {r:3, re:/(3|drei)/i},
-        {r:4, re:/(4|vier)/i}
+        {r:1, re:/\b(1|eins|ein)\b/i},
+        {r:2, re:/\b(2|zwei)\b/i},
+        {r:3, re:/\b(3|drei)\b/i},
+        {r:4, re:/\b(4|vier)\b/i}
       ];
 
       const heard = [];
