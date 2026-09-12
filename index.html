@@ -41,7 +41,7 @@
 <body>
 <div class="wrap">
   <div class="top">
-    <h1>Hands-free SRS – V11 6-Sekunden-Mikro</h1>
+    <h1>Hands-free SRS – V13 akustischer Mikrostart</h1>
     <div class="pill" id="dueCount">0 fällig</div>
   </div>
 
@@ -129,6 +129,7 @@
   let recognition = null;
   let listening = false;
   let awaitingRating = false;
+  let ratingAttempt = 0;
   let recognitionTimer = null;
   let reviewMode = false;
   let reviewPool = [];
@@ -289,7 +290,8 @@
       : 'Bewerte mit 1–4';
     if ($('voiceRating').checked) {
       awaitingRating = true;
-      setTimeout(startRecognition, 900);
+      ratingAttempt = 0;
+      setTimeout(startRecognition, 1200);
     }
   }
 
@@ -377,21 +379,40 @@
     return true;
   }
 
+  function cueBeep() {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      const ac = new AC();
+      const o = ac.createOscillator();
+      const g = ac.createGain();
+      o.frequency.value = 880;
+      g.gain.value = 0.08;
+      o.connect(g);
+      g.connect(ac.destination);
+      o.start();
+      setTimeout(() => {
+        try { o.stop(); } catch(e) {}
+        setTimeout(() => { try { ac.close(); } catch(e) {} }, 100);
+      }, 90);
+    } catch(e) {}
+  }
+
   function parseRating(texts) {
-    const all = texts
+    const normalized = texts
       .map(t => (t || '').toLowerCase()
         .replace(/[.,!?;:()[\]{}"'’`´]/g, ' ')
         .replace(/\s+/g, ' ')
         .trim())
-      .filter(Boolean)
-      .join(' ');
+      .filter(Boolean);
 
-    const words = all.split(' ').filter(Boolean);
-
-    if (words.includes('1') || words.includes('eins') || words.includes('ein')) return 1;
-    if (words.includes('2') || words.includes('zwei')) return 2;
-    if (words.includes('3') || words.includes('drei')) return 3;
-    if (words.includes('4') || words.includes('vier')) return 4;
+    for (const t of normalized) {
+      const words = t.split(' ').filter(Boolean);
+      if (words.includes('1') || words.includes('eins') || words.includes('ein')) return 1;
+      if (words.includes('2') || words.includes('zwei')) return 2;
+      if (words.includes('3') || words.includes('drei')) return 3;
+      if (words.includes('4') || words.includes('vier')) return 4;
+    }
     return null;
   }
 
@@ -401,7 +422,7 @@
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) return;
 
-    // Jede Runde ist wie beim erfolgreichen Diagnosetest eine frische Sitzung.
+    ratingAttempt++;
     recognition = new SR();
     recognition.lang = 'de-DE';
     recognition.interimResults = true;
@@ -409,10 +430,12 @@
     recognition.maxAlternatives = 10;
 
     let accepted = false;
+    let finished = false;
     listening = true;
 
     recognition.onstart = () => {
-      $('status').textContent = 'Mikrofon offen – sag eins, zwei, drei oder vier …';
+      $('status').textContent = `Mikrofon offen – Versuch ${ratingAttempt}/3. Nach dem Ton sprechen.`;
+      cueBeep();
     };
 
     recognition.onresult = e => {
@@ -424,11 +447,14 @@
         }
       }
 
-      if (texts.length) $('status').textContent = `Erkannt: ${texts.join(' | ')}`;
+      if (texts.length) {
+        $('status').textContent = `Erkannt: ${texts.join(' | ')}`;
+      }
 
       const rating = parseRating(texts);
       if (rating !== null && !accepted) {
         accepted = true;
+        finished = true;
         awaitingRating = false;
         if (recognitionTimer) {
           clearTimeout(recognitionTimer);
@@ -441,7 +467,7 @@
     };
 
     recognition.onnomatch = () => {
-      $('status').textContent = 'Nichts Passendes erkannt – Mikrofon bleibt bis zum Zeitlimit offen.';
+      $('status').textContent = `Kein gültiges Wort erkannt – Versuch ${ratingAttempt}/3.`;
     };
 
     recognition.onerror = e => {
@@ -456,12 +482,6 @@
         $('status').textContent = 'Mikrofonzugriff nicht erlaubt.';
         return;
       }
-
-      // Keine hektische Schleife: erst mit Abstand neu öffnen.
-      if (awaitingRating && !paused && !accepted) {
-        $('status').textContent = 'Nicht erkannt – neuer Versuch in 1 Sekunde …';
-        setTimeout(startRecognition, 1000);
-      }
     };
 
     recognition.onend = () => {
@@ -471,26 +491,33 @@
         recognitionTimer = null;
       }
 
-      if (awaitingRating && !paused && !accepted && $('voiceRating').checked) {
-        $('status').textContent = 'Nicht erkannt – neuer Versuch in 1 Sekunde …';
-        setTimeout(startRecognition, 1000);
+      if (accepted || finished || !awaitingRating || paused) return;
+
+      if (ratingAttempt < 3) {
+        $('status').textContent = `Nicht erkannt – nächster Versuch (${ratingAttempt + 1}/3) …`;
+        setTimeout(startRecognition, 1200);
+      } else {
+        // Nicht hängenbleiben: Karte ohne Bewertung verlassen.
+        awaitingRating = false;
+        $('status').textContent = '3 Versuche ohne Erkennung – Karte bleibt unverändert.';
+        setTimeout(nextRandomWord, 1200);
       }
     };
 
     try {
       recognition.start();
 
-      // Wie im Diagnosetest: maximal 6 Sekunden für diesen Versuch.
+      // Sicherheitslimit pro Versuch. Chrome/Samsung dürfen auch früher beenden.
       recognitionTimer = setTimeout(() => {
         recognitionTimer = null;
         if (recognition && listening && !accepted) {
           try { recognition.stop(); } catch(e) {}
         }
-      }, 6000);
+      }, 6500);
     } catch(e) {
       listening = false;
-      if (awaitingRating && !paused) {
-        setTimeout(startRecognition, 1000);
+      if (ratingAttempt < 3 && awaitingRating && !paused) {
+        setTimeout(startRecognition, 1200);
       }
     }
   }
@@ -537,7 +564,7 @@
 
   $('resetBtn').addEventListener('click', () => {
     if (!confirm('Wirklich den gesamten Lernstand zurücksetzen?')) return;
-    state = {}; reviewMode=false; reviewPool=[]; awaitingRating=false;
+    state = {}; reviewMode=false; reviewPool=[]; awaitingRating=false; ratingAttempt=0;
     localStorage.removeItem(STATE_KEY);
     current = null; queue = []; paused = true; runningToken++;
     updateDue();
