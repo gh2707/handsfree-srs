@@ -550,7 +550,20 @@
       }
     };
 
-    recognition.onend = () => { listening = false; };
+    recognition.onend = () => {
+      listening = false;
+      if (paused || !$('voiceRating').checked || !current) return;
+
+      // Manche Android-Browser beenden einen Erkennungsversuch ohne
+      // onresult/onerror. Auch das zählt als fehlgeschlagener Versuch.
+      if (ratingAttempt === 1) {
+        setTimeout(startRecognition, 500);
+      } else if (ratingAttempt >= 2) {
+        ratingAttempt = 0;
+        $('status').textContent = 'Zweimal nicht erkannt – Karte wird übersprungen.';
+        setTimeout(nextRandomWord, 500);
+      }
+    };
   }
 
   function startRecognition() {
