@@ -41,7 +41,7 @@
 <body>
 <div class="wrap">
   <div class="top">
-    <h1>Hands-free SRS – DE Bewertung Fix</h1>
+    <h1>Hands-free SRS – DE fließende Erkennung</h1>
     <div class="pill" id="dueCount">0 fällig</div>
   </div>
 
@@ -127,6 +127,7 @@
   let runningToken = 0;
   let recognition = null;
   let listening = false;
+  let awaitingRating = false;
 
   $('wordDelay').value = settings.wordDelay ?? 4;
   $('sentenceDelay').value = settings.sentenceDelay ?? 6;
@@ -272,7 +273,10 @@
     $('status').textContent = $('voiceRating').checked
       ? 'Sag eins, zwei, drei oder vier …'
       : 'Bewerte mit 1–4';
-    if ($('voiceRating').checked) startRecognition();
+    if ($('voiceRating').checked) {
+      awaitingRating = true;
+      startRecognition();
+    }
   }
 
   function buildFollowups(wordCard) {
@@ -304,6 +308,7 @@
 
   function rate(rating) {
     if (!current) return;
+    awaitingRating = false;
     stopRecognition();
     schedule(current.key, rating);
 
@@ -334,6 +339,7 @@
       $('voiceInfo').innerHTML = '<span class="warn">Spracherkennung wird von diesem Browser nicht unterstützt.</span>';
       return;
     }
+
     recognition = new SR();
     recognition.lang = 'de-DE';
     recognition.interimResults = true;
@@ -342,16 +348,13 @@
 
     recognition.onresult = e => {
       const texts = [];
+
       for (let i=e.resultIndex; i<e.results.length; i++) {
         for (let j=0; j<e.results[i].length; j++) {
           texts.push(e.results[i][j].transcript.toLowerCase().trim());
         }
       }
 
-      const joined = texts.join(' | ');
-      $('status').textContent = `Erkannt: ${joined}`;
-
-      // Robust auswerten: Satzzeichen entfernen und alle erkannten Varianten prüfen.
       const normalized = texts
         .map(t => t.replace(/[.,!?;:()[\]{}"'’`´]/g, ' ').replace(/\s+/g, ' ').trim())
         .join(' ');
@@ -365,34 +368,62 @@
       else if (words.includes('4') || words.includes('vier')) rating = 4;
 
       if (rating !== null) {
-        // Sichtbare Bestätigung, bevor die nächste Karte startet.
-        const labels = {1:'Einfach', 2:'Gut', 3:'Schwer', 4:'Nochmal'};
-        $('status').textContent = `Bewertung ${rating}: ${labels[rating]}`;
+        awaitingRating = false;
         listening = false;
         try { recognition.stop(); } catch(e) {}
-        setTimeout(() => rate(rating), 400);
+        setTimeout(() => rate(rating), 150);
+      } else {
+        // Chrome hat Sprache gehört, aber keine gültige 1–4 geliefert.
+        // Nach Ende dieser Erkennungsrunde sofort erneut zuhören.
+        $('status').textContent = 'Bitte nochmal: eins, zwei, drei oder vier …';
       }
     };
+
     recognition.onerror = e => {
       listening = false;
-      $('status').textContent = `Spracherkennungsfehler: ${e.error}`;
+
+      // "no-speech"/"aborted" sind im Hands-free-Betrieb kein Abbruch:
+      // solange die Karte auf eine Bewertung wartet, wird neu geöffnet.
+      if (awaitingRating && !paused && $('voiceRating').checked) {
+        $('status').textContent = 'Bitte nochmal: eins, zwei, drei oder vier …';
+        setTimeout(startRecognition, 250);
+      } else {
+        $('status').textContent = `Spracherkennungsfehler: ${e.error}`;
+      }
     };
-    recognition.onend = () => { listening = false; };
+
+    recognition.onend = () => {
+      listening = false;
+
+      // Wichtig für flüssiges Hands-free:
+      // Browser beendet kurze Recognition-Sitzungen von selbst.
+      // Solange keine gültige Bewertung erkannt wurde, automatisch neu öffnen.
+      if (awaitingRating && !paused && $('voiceRating').checked) {
+        setTimeout(startRecognition, 250);
+      }
+    };
+
     $('voiceInfo').innerHTML = '<span class="ok">Deutsch de-DE aktiv.</span>';
   }
 
   function startRecognition() {
-    if (!recognition || paused || listening) return;
-    try { listening = true; recognition.start(); } catch(e) {
+    if (!recognition || paused || listening || !awaitingRating) return;
+    try {
+      listening = true;
+      recognition.start();
+    } catch(e) {
       listening = false;
-      $('status').textContent = `Startfehler: ${e.message}`;
+      if (awaitingRating && !paused) {
+        setTimeout(startRecognition, 300);
+      }
     }
   }
+
   function stopRecognition() {
     if (recognition && listening) {
       try { recognition.abort(); } catch(e) {}
-      listening = false;
     }
+    listening = false;
   }
 
   $('startBtn').addEventListener('click', () => {
@@ -404,6 +435,7 @@
 
   $('pauseBtn').addEventListener('click', () => {
     paused = true;
+    awaitingRating = false;
     runningToken++;
     stopRecognition();
     speechSynthesis.cancel();
@@ -414,7 +446,7 @@
     if (!confirm('Wirklich den gesamten Lernstand zurücksetzen?')) return;
     state = {};
     localStorage.removeItem(STATE_KEY);
-    current = null; queue = []; paused = true; runningToken++;
+    current = null; queue = []; paused = true; awaitingRating = false; runningToken++;
     updateDue();
     $('kind').textContent='Bereit'; $('front').textContent='Start drücken'; $('answer').textContent=''; $('status').textContent='';
   });
