@@ -98,6 +98,12 @@
     <label>Bewertungs-Zeitfenster (Sekunden)</label>
     <input id="ratingWindow" type="number" min="6" max="30" step="1" value="12">
 
+    <label>Mikrofon für Sprachbewertung</label>
+    <select id="micSelect">
+      <option value="auto">Automatisch – Bluetooth bevorzugen</option>
+    </select>
+    <p class="small" id="micInfo">Mikrofon wird beim Start geprüft.</p>
+
     <label>Aktiver Stapel</label>
     <select id="activeStack">
       <option value="1">Stapel 1</option>
@@ -163,11 +169,16 @@
   let sessionWordCounter = 0;
   let wakeLock = null;
   let audioCtx = null;
+  let micStream = null;
+  let micTrack = null;
+  let micDeviceId = settings.micDeviceId || 'auto';
+  let speechTrackMode = 'unknown'; // 'track' wenn SpeechRecognition.start(audioTrack) funktioniert, sonst 'default'
 
   $('wordDelay').value = settings.wordDelay ?? 4;
   $('sentenceDelay').value = settings.sentenceDelay ?? 6;
   $('ratingWindow').value = settings.ratingWindow ?? 12;
   $('activeStack').value = String(settings.activeStack ?? 1);
+  $('micSelect').value = micDeviceId;
   $('againGap').value = settings.againGap ?? 3;
   $('hardGap').value = settings.hardGap ?? 8;
   $('voiceRating').checked = settings.voiceRating ?? true;
@@ -178,6 +189,7 @@
       wordDelay: Number($('wordDelay').value || 4),
       sentenceDelay: Number($('sentenceDelay').value || 6),
       ratingWindow: Number($('ratingWindow').value || 12),
+      micDeviceId: $('micSelect').value || 'auto',
       activeStack: Number($('activeStack').value || 1),
       againGap: Number($('againGap').value || 3),
       hardGap: Number($('hardGap').value || 8),
@@ -191,6 +203,11 @@
   }
 
   ['wordDelay','sentenceDelay','ratingWindow','activeStack','againGap','hardGap','voiceRating','mixDirections'].forEach(id => $(id).addEventListener('change', () => { save(); updateDue(); }));
+  $('micSelect').addEventListener('change', async () => {
+    micDeviceId = $('micSelect').value || 'auto';
+    save();
+    await preparePreferredMicrophone(true);
+  });
 
   function now(){ return Date.now(); }
   function day(ms){ return ms * 86400000; }
@@ -575,6 +592,91 @@
     return null;
   }
 
+  function looksLikeBluetoothMic(label) {
+    const l = String(label || '').toLowerCase();
+    return /bluetooth|buds|headset|hands[- ]?free|galaxy|sm-r175|bt\b/.test(l);
+  }
+
+  async function refreshMicrophoneList() {
+    if (!navigator.mediaDevices?.enumerateDevices) return [];
+    const devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput');
+    const sel = $('micSelect');
+    const previous = sel.value || micDeviceId || 'auto';
+    sel.innerHTML = '<option value="auto">Automatisch – Bluetooth bevorzugen</option>';
+    devices.forEach((d, i) => {
+      const opt = document.createElement('option');
+      opt.value = d.deviceId;
+      opt.textContent = d.label || `Mikrofon ${i+1}`;
+      sel.appendChild(opt);
+    });
+    const exists = [...sel.options].some(o => o.value === previous);
+    sel.value = exists ? previous : 'auto';
+    micDeviceId = sel.value;
+    return devices;
+  }
+
+  function stopPreferredMicrophone() {
+    if (micStream) {
+      try { micStream.getTracks().forEach(t => t.stop()); } catch(e) {}
+    }
+    micStream = null;
+    micTrack = null;
+  }
+
+  async function preparePreferredMicrophone(force=false) {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      $('micInfo').textContent = 'Browser bietet keine auswählbaren Audioeingänge an – Standardmikrofon wird verwendet.';
+      return false;
+    }
+    if (micTrack && micTrack.readyState === 'live' && !force) return true;
+    stopPreferredMicrophone();
+    try {
+      // Einmaliger Zugriff sorgt dafür, dass Android/Chrome die echten Gerätenamen preisgeben kann.
+      let devices = await refreshMicrophoneList();
+      let requested = $('micSelect').value || 'auto';
+      let chosenId = requested;
+      let chosenLabel = '';
+      if (requested === 'auto') {
+        const bt = devices.find(d => looksLikeBluetoothMic(d.label));
+        if (bt) {
+          chosenId = bt.deviceId;
+          chosenLabel = bt.label;
+        } else {
+          chosenId = '';
+        }
+      } else {
+        const selected = devices.find(d => d.deviceId === requested);
+        chosenLabel = selected?.label || '';
+      }
+
+      const audioConstraints = chosenId
+        ? {deviceId:{exact:chosenId}, echoCancellation:true, noiseSuppression:true, autoGainControl:true}
+        : {echoCancellation:true, noiseSuppression:true, autoGainControl:true};
+      micStream = await navigator.mediaDevices.getUserMedia({audio: audioConstraints, video:false});
+      micTrack = micStream.getAudioTracks()[0] || null;
+
+      // Nach erteilter Berechtigung erneut laden: Erst jetzt sind Labels oft vollständig sichtbar.
+      devices = await refreshMicrophoneList();
+      if (requested === 'auto') {
+        const btAfterPermission = devices.find(d => looksLikeBluetoothMic(d.label));
+        const currentLabel = micTrack?.label || '';
+        if (btAfterPermission && !looksLikeBluetoothMic(currentLabel) && btAfterPermission.deviceId) {
+          stopPreferredMicrophone();
+          micStream = await navigator.mediaDevices.getUserMedia({audio:{deviceId:{exact:btAfterPermission.deviceId}, echoCancellation:true, noiseSuppression:true, autoGainControl:true}, video:false});
+          micTrack = micStream.getAudioTracks()[0] || null;
+        }
+      }
+
+      const finalLabel = micTrack?.label || chosenLabel || 'Standardmikrofon';
+      $('micInfo').innerHTML = `Aktiver Eingang: <b>${finalLabel}</b>`;
+      return !!micTrack;
+    } catch(e) {
+      stopPreferredMicrophone();
+      $('micInfo').innerHTML = `<span class="warn">Mikrofonauswahl nicht verfügbar (${e.name || 'Fehler'}). Standard-Spracherkennung wird verwendet.</span>`;
+      return false;
+    }
+  }
+
   function setupRecognition() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) {
@@ -644,12 +746,24 @@
     }, 180);
   }
 
-  function startRecognitionSession() {
+  async function startRecognitionSession() {
     if (paused || listening || !ratingWindowActive || ratingAccepted || !$('voiceRating').checked || !recognition) return;
+    if (!micTrack || micTrack.readyState !== 'live') await preparePreferredMicrophone(false);
     listening = true;
-    try { recognition.start(); }
-    catch(e) {
+    try {
+      if (micTrack && speechTrackMode !== 'default') {
+        recognition.start(micTrack);
+        speechTrackMode = 'track';
+      } else {
+        recognition.start();
+      }
+    } catch(e) {
       listening = false;
+      // Falls Chrome/Android den audioTrack-Parameter nicht unterstützt, auf bewährte Standarderkennung zurückfallen.
+      if (micTrack && speechTrackMode !== 'default' && (e instanceof TypeError || e.name === 'NotSupportedError' || e.name === 'InvalidStateError')) {
+        speechTrackMode = 'default';
+        $('micInfo').innerHTML += ' <span class="warn">Direkte Übergabe dieses Eingangs an Web Speech wird von diesem Browser nicht akzeptiert – Standardroute aktiv.</span>';
+      }
       scheduleRecognitionRestart();
     }
   }
@@ -692,16 +806,17 @@
     if (document.visibilityState === 'visible' && !paused) requestWakeLock();
   });
 
-  $('startBtn').addEventListener('click', () => {
+  $('startBtn').addEventListener('click', async () => {
     paused = false;
     getAudioContext();
     requestWakeLock();
+    await preparePreferredMicrophone(false);
     speechSynthesis.resume();
     if (!current || $('kind').textContent === 'Fertig' || $('front').textContent === 'Start drücken') nextRandomWord();
     else runCard(current);
   });
 
-  $('reviewBtn').addEventListener('click', () => {
+  $('reviewBtn').addEventListener('click', async () => {
     runningToken++;
     stopRecognition();
     speechSynthesis.cancel();
@@ -715,6 +830,7 @@
     paused = false;
     getAudioContext();
     requestWakeLock();
+    await preparePreferredMicrophone(false);
     $('status').textContent = 'Extra-Wiederholung – SRS bleibt unverändert.';
     nextRandomWord();
   });
@@ -824,6 +940,13 @@
     }
     e.target.value='';
   });
+
+  if (navigator.mediaDevices?.addEventListener) {
+    navigator.mediaDevices.addEventListener('devicechange', async () => {
+      await refreshMicrophoneList();
+      if (!paused) await preparePreferredMicrophone(true);
+    });
+  }
 
   setupRecognition();
   updateDue();
