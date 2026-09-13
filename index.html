@@ -37,7 +37,7 @@
     details { background:#111827; border:1px solid #334155; border-radius:16px; padding:14px; }
     summary { cursor:pointer; font-weight:700; }
     label { display:block; margin-top:12px; color:#cbd5e1; font-size:.9rem; }
-    input[type=number] { width:100%; padding:10px; border-radius:10px; border:1px solid #475569; background:#0f172a; color:#fff; }
+    input[type=number], select { width:100%; padding:10px; border-radius:10px; border:1px solid #475569; background:#0f172a; color:#fff; }
     input[type=file] { display:none; }
     .filelabel { display:inline-block; text-align:center; background:#1f2937; border:1px solid #475569; }
     .small { font-size:.84rem; color:#94a3b8; line-height:1.4; }
@@ -47,7 +47,7 @@
 <body>
 <div class="wrap">
   <div class="top">
-    <h1>Hands-free SRS – V6 + Wiederholen + Quittung</h1>
+    <h1>Hands-free SRS – Laufversion</h1>
     <div class="pill" id="dueCount">0 fällig</div>
   </div>
 
@@ -86,7 +86,7 @@
     <p class="small">
       Unterstützte Spaltennamen u. a.: <b>Deutsch / DE</b>, <b>Spanisch / ES</b>,
       <b>Beispielsatz Deutsch</b>, <b>Beispielsatz Spanisch</b>.
-      Weitere Satzpaare können als „Beispielsatz Deutsch 2 / Spanisch 2“, „… 3“ usw. angelegt werden. Zusammengehörige Karten können über „Gruppe“ und „Gruppenposition“ direkt nacheinander gelernt werden.
+      Weitere Satzpaare können als „Beispielsatz Deutsch 2 / Spanisch 2“, „… 3“ usw. angelegt werden. Zusammengehörige Karten können über „Gruppe“ und „Gruppenposition“ direkt nacheinander gelernt werden. Optional kann eine Spalte „Stapel“ mit den Werten 1–4 verwendet werden.
     </p>
 
     <label>Nachdenkzeit Vokabel (Sekunden)</label>
@@ -94,6 +94,23 @@
 
     <label>Nachdenkzeit Beispielsatz (Sekunden)</label>
     <input id="sentenceDelay" type="number" min="0" max="30" step="1" value="6">
+
+    <label>Bewertungs-Zeitfenster (Sekunden)</label>
+    <input id="ratingWindow" type="number" min="6" max="30" step="1" value="12">
+
+    <label>Aktiver Stapel</label>
+    <select id="activeStack">
+      <option value="1">Stapel 1</option>
+      <option value="2">Stapel 2</option>
+      <option value="3">Stapel 3</option>
+      <option value="4">Stapel 4</option>
+    </select>
+
+    <label>„seis“: Wiederholung nach so vielen anderen Vokabeln</label>
+    <input id="againGap" type="number" min="1" max="20" step="1" value="3">
+
+    <label>„tres“: Wiederholung nach so vielen anderen Vokabeln</label>
+    <input id="hardGap" type="number" min="1" max="30" step="1" value="8">
 
     <label><input id="voiceRating" type="checkbox" checked> Bewertung per Sprache („uno“, „dos“, „tres“, „seis“)</label>
     <label><input id="mixDirections" type="checkbox" checked> Deutsch → Spanisch und Spanisch → Deutsch mischen</label>
@@ -126,6 +143,7 @@
   ];
 
   let data = JSON.parse(localStorage.getItem(DATA_KEY) || 'null') || demo;
+  data = data.map(n => ({...n, stack:[1,2,3,4].includes(Number(n.stack)) ? Number(n.stack) : 1}));
   let state = JSON.parse(localStorage.getItem(STATE_KEY) || '{}');
   let settings = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
   let queue = [];
@@ -134,13 +152,24 @@
   let runningToken = 0;
   let recognition = null;
   let listening = false;
-  let ratingAttempt = 0;
+  let ratingWindowActive = false;
+  let ratingAccepted = false;
+  let ratingWindowTimer = null;
+  let recognitionRestartTimer = null;
   let groupQueue = [];
   let reviewMode = false;
   let reviewPool = [];
+  let sessionRetryQueue = [];
+  let sessionWordCounter = 0;
+  let wakeLock = null;
+  let audioCtx = null;
 
   $('wordDelay').value = settings.wordDelay ?? 4;
   $('sentenceDelay').value = settings.sentenceDelay ?? 6;
+  $('ratingWindow').value = settings.ratingWindow ?? 12;
+  $('activeStack').value = String(settings.activeStack ?? 1);
+  $('againGap').value = settings.againGap ?? 3;
+  $('hardGap').value = settings.hardGap ?? 8;
   $('voiceRating').checked = settings.voiceRating ?? true;
   $('mixDirections').checked = settings.mixDirections ?? true;
 
@@ -148,6 +177,10 @@
     settings = {
       wordDelay: Number($('wordDelay').value || 4),
       sentenceDelay: Number($('sentenceDelay').value || 6),
+      ratingWindow: Number($('ratingWindow').value || 12),
+      activeStack: Number($('activeStack').value || 1),
+      againGap: Number($('againGap').value || 3),
+      hardGap: Number($('hardGap').value || 8),
       voiceRating: $('voiceRating').checked,
       mixDirections: $('mixDirections').checked
     };
@@ -157,7 +190,7 @@
     updateDue();
   }
 
-  ['wordDelay','sentenceDelay','voiceRating','mixDirections'].forEach(id => $(id).addEventListener('change', save));
+  ['wordDelay','sentenceDelay','ratingWindow','activeStack','againGap','hardGap','voiceRating','mixDirections'].forEach(id => $(id).addEventListener('change', () => { save(); updateDue(); }));
 
   function now(){ return Date.now(); }
   function day(ms){ return ms * 86400000; }
@@ -173,23 +206,24 @@
 
   function schedule(key, rating) {
     const s = getSched(key);
-    let days = s.intervalDays || 0;
+    let days = 0;
 
-    if (rating === 1) { // Einfach
-      days = days <= 0 ? 4 : Math.max(4, days * 3.5);
+    if (rating === 1) { // uno = extrem leicht
+      days = 28;
       s.intervalDays = days;
       s.due = now() + day(days);
-    } else if (rating === 2) { // Gut
-      days = days <= 0 ? 1 : Math.max(1, days * 2.5);
+    } else if (rating === 2) { // dos = richtig / gut
+      days = 14;
       s.intervalDays = days;
       s.due = now() + day(days);
-    } else if (rating === 3) { // Schwer
-      days = days <= 0 ? 1 : Math.max(1, days * 1.2);
+    } else if (rating === 3) { // tres = schwierig / Fehler; zusätzlich Wiederholung im selben Lauf
+      days = 5;
       s.intervalDays = days;
       s.due = now() + day(days);
-    } else if (rating === 4) { // Nochmal
-      s.due = now() + 10*60*1000;
-      s.intervalDays = 0;
+    } else if (rating === 4) { // seis = nicht gewusst; zusätzlich Wiederholung im selben Lauf
+      days = 1;
+      s.intervalDays = days;
+      s.due = now() + day(days);
       s.lapses++;
     }
     s.reps++;
@@ -197,10 +231,20 @@
     save();
   }
 
+  function cardStack(note) {
+    const n = Number(note.stack || 1);
+    return [1,2,3,4].includes(n) ? n : 1;
+  }
+
+  function activeData() {
+    const wanted = Number($('activeStack').value || 1);
+    return data.filter(n => cardStack(n) === wanted);
+  }
+
   function allVocabCards() {
     const dirs = $('mixDirections').checked ? ['de-es','es-de'] : ['de-es'];
     const cards = [];
-    data.forEach(n => dirs.forEach(dir => {
+    activeData().forEach(n => dirs.forEach(dir => {
       const key = cardKey(n.id,'word',dir,0);
       const s = getSched(key);
       if ((s.due || 0) <= now()) cards.push({note:n, type:'word', dir, key});
@@ -220,11 +264,22 @@
     $('dueCount').textContent = `${n} fällig`;
   }
 
+  function prepareSpanishForSpeech(text) {
+    let t = String(text || '').trim();
+    // Gleichlautende männliche/weibliche Substantive: "el deportista, la deportista" -> "el, la deportista"
+    let m = t.match(/^el\s+(.+?)\s*,\s*la\s+\1$/i);
+    if (m) return `el, la ${m[1]}`;
+    // Bereits kompakt notierte Formen wie "el/la deportista"
+    t = t.replace(/^el\s*\/\s*la\s+/i, 'el, la ');
+    return t;
+  }
+
   function speak(text, lang) {
     return new Promise(resolve => {
       if (!text) return resolve();
       speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(text);
+      const spokenText = lang.startsWith('es') ? prepareSpanishForSpeech(text) : text;
+      const u = new SpeechSynthesisUtterance(spokenText);
       u.lang = lang;
       u.rate = 0.92;
       u.onend = () => resolve();
@@ -264,7 +319,6 @@
   }
 
   async function runCard(c) {
-    ratingAttempt = 0;
     const token = ++runningToken;
     stopRecognition();
     const txt = renderCard(c, false);
@@ -284,95 +338,17 @@
     $('status').textContent = $('voiceRating').checked
       ? 'Sag uno, dos, tres oder seis …'
       : 'Bewerte mit 1–4';
-    if ($('voiceRating').checked) startRecognition();
+    if ($('voiceRating').checked) beginRatingWindow();
   }
 
   function allVocabCardsForReview() {
     const dirs = $('mixDirections').checked ? ['de-es','es-de'] : ['de-es'];
     const cards = [];
-    data.forEach(n => dirs.forEach(dir => {
+    activeData().forEach(n => dirs.forEach(dir => {
       const key = cardKey(n.id,'word',dir,0);
       cards.push({note:n, type:'word', dir, key});
     }));
     return cards;
-  }
-
-  function shuffle(a) {
-    for(let i=a.length-1;i>0;i--){
-      const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]];
-    }
-    return a;
-  }
-
-  function updateDue() {
-    const n = allVocabCards().length;
-    $('dueCount').textContent = `${n} fällig`;
-  }
-
-  function speak(text, lang) {
-    return new Promise(resolve => {
-      if (!text) return resolve();
-      speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang = lang;
-      u.rate = 0.92;
-      u.onend = () => resolve();
-      u.onerror = () => resolve();
-      speechSynthesis.speak(u);
-    });
-  }
-
-  function sleep(ms, token) {
-    return new Promise(resolve => {
-      const step = () => {
-        if (token !== runningToken) return resolve(false);
-        if (!paused) return setTimeout(() => resolve(true), ms);
-        setTimeout(step, 150);
-      };
-      step();
-    });
-  }
-
-  function renderCard(c, showAnswer=false) {
-    current = c;
-    const isDE = c.dir === 'de-es';
-    const label = c.type === 'word' ? 'Vokabel' : `Beispielsatz ${c.exIndex+1}`;
-    $('kind').textContent = `${label} · ${isDE ? 'Deutsch → Spanisch' : 'Spanisch → Deutsch'}`;
-    let front, answer;
-    if (c.type === 'word') {
-      front = isDE ? c.note.de : c.note.es;
-      answer = isDE ? c.note.es : c.note.de;
-    } else {
-      const ex = c.note.examples[c.exIndex];
-      front = isDE ? ex.de : ex.es;
-      answer = isDE ? ex.es : ex.de;
-    }
-    $('front').textContent = front;
-    $('answer').textContent = showAnswer ? answer : '';
-    return {front, answer, frontLang:isDE?'de-DE':'es-ES', answerLang:isDE?'es-ES':'de-DE'};
-  }
-
-  async function runCard(c) {
-    const token = ++runningToken;
-    stopRecognition();
-    const txt = renderCard(c, false);
-    $('status').textContent = 'Frage';
-    await speak(txt.front, txt.frontLang);
-    if (token !== runningToken) return;
-
-    const delay = c.type === 'word' ? Number($('wordDelay').value)*1000 : Number($('sentenceDelay').value)*1000;
-    const ok = await sleep(delay, token);
-    if (!ok || token !== runningToken) return;
-
-    renderCard(c, true);
-    $('status').textContent = 'Antwort';
-    await speak(txt.answer, txt.answerLang);
-    if (token !== runningToken) return;
-
-    $('status').textContent = $('voiceRating').checked
-      ? 'Sag uno, dos, tres oder seis …'
-      : 'Bewerte mit 1–4';
-    if ($('voiceRating').checked) startRecognition();
   }
 
   function buildFollowups(wordCard) {
@@ -391,7 +367,7 @@
   function groupedWordCardsFor(card) {
     const g = (card.note.group || '').trim();
     if (!g) return [];
-    const notes = data
+    const notes = activeData()
       .filter(n => (n.group || '').trim() === g)
       .sort((a,b) => (a.groupPos||0) - (b.groupPos||0));
     return notes.map(n => ({
@@ -414,11 +390,37 @@
     runCard(current);
   }
 
+  function clearSessionRetry(key) {
+    sessionRetryQueue = sessionRetryQueue.filter(x => x.card.key !== key);
+  }
+
+  function queueSessionRetry(card, rating) {
+    if (reviewMode || !card || card.type !== 'word') return;
+    clearSessionRetry(card.key);
+    if (rating !== 3 && rating !== 4) return;
+    const gap = rating === 4
+      ? Number($('againGap').value || 3)
+      : Number($('hardGap').value || 8);
+    sessionRetryQueue.push({
+      card: {note:card.note, type:'word', dir:card.dir, key:card.key},
+      readyAt: sessionWordCounter + Math.max(1, gap)
+    });
+  }
+
+  function takeReadySessionRetry(force=false) {
+    if (!sessionRetryQueue.length) return null;
+    sessionRetryQueue.sort((a,b) => a.readyAt - b.readyAt);
+    const idx = sessionRetryQueue.findIndex(x => force || x.readyAt <= sessionWordCounter);
+    if (idx < 0) return null;
+    return sessionRetryQueue.splice(idx,1)[0].card;
+  }
+
   function nextRandomWord() {
     if (reviewMode) {
       if (!reviewPool.length) {
         reviewMode = false;
         paused = true;
+        releaseWakeLock();
         current = null;
         $('kind').textContent = 'Fertig';
         $('front').textContent = 'Extra-Wiederholung beendet.';
@@ -432,9 +434,22 @@
       return;
     }
 
+    const readyRetry = takeReadySessionRetry(false);
+    if (readyRetry) {
+      startSelectedWord(readyRetry);
+      return;
+    }
+
     const due = allVocabCards();
     if (!due.length) {
+      // Schwierige Karten sollen im selben Lauf wirklich noch einmal kommen.
+      const remainingRetry = takeReadySessionRetry(true);
+      if (remainingRetry) {
+        startSelectedWord(remainingRetry);
+        return;
+      }
       paused = true;
+      releaseWakeLock();
       current = null;
       $('kind').textContent = 'Fertig';
       $('front').textContent = 'Für jetzt nichts mehr fällig.';
@@ -446,55 +461,118 @@
     startSelectedWord(selected);
   }
 
-  function rate(rating) {
+  function rate(rating, fromVoice=false) {
     if (!current) return;
-    stopRecognition();
-    if (!reviewMode) schedule(current.key, rating);
+    stopRatingWindow();
+
+    if (current.type === 'word') sessionWordCounter++;
+
+    if (!reviewMode) {
+      schedule(current.key, rating);
+      if (current.type === 'word') queueSessionRetry(current, rating);
+    }
+
+    // Quittung erst NACHdem die Bewertung übernommen/gespeichert wurde.
+    if (fromVoice) confirmationBeep();
+
+    const transitionDelay = fromVoice ? 450 : 250;
 
     if (current.type === 'word') {
       const followups = buildFollowups(current);
       if (followups.length) {
         queue = followups;
         const n = queue.shift();
-        setTimeout(() => runCard(n), 250);
+        setTimeout(() => runCard(n), transitionDelay);
         return;
       }
     }
 
     if (current.type === 'sentence' && queue.length) {
       const n = queue.shift();
-      setTimeout(() => runCard(n), 250);
+      setTimeout(() => runCard(n), transitionDelay);
       return;
     }
 
     if (groupQueue.length) {
       const n = groupQueue.shift();
-      setTimeout(() => runCard(n), 250);
+      setTimeout(() => runCard(n), transitionDelay);
       return;
     }
 
-    setTimeout(nextRandomWord, 250);
+    setTimeout(nextRandomWord, transitionDelay);
   }
 
   document.querySelectorAll('[data-rate]').forEach(b => b.addEventListener('click', () => rate(Number(b.dataset.rate))));
 
-  function confirmationBeep() {
+  function getAudioContext() {
     try {
       const AC = window.AudioContext || window.webkitAudioContext;
-      if (!AC) return;
-      const ac = new AC();
+      if (!AC) return null;
+      if (!audioCtx) audioCtx = new AC();
+      if (audioCtx.state === 'suspended') audioCtx.resume().catch(()=>{});
+      return audioCtx;
+    } catch(e) { return null; }
+  }
+
+  function tone(freq, gainValue, durationMs, delayMs=0) {
+    const ac = getAudioContext();
+    if (!ac) return;
+    try {
       const osc = ac.createOscillator();
       const gain = ac.createGain();
-      osc.frequency.value = 1000;
-      gain.gain.value = 0.10;
+      osc.frequency.value = freq;
+      gain.gain.value = gainValue;
       osc.connect(gain);
       gain.connect(ac.destination);
-      osc.start();
-      setTimeout(() => {
-        try { osc.stop(); } catch(e) {}
-        setTimeout(() => { try { ac.close(); } catch(e) {} }, 80);
-      }, 90);
+      const start = ac.currentTime + delayMs/1000;
+      const end = start + durationMs/1000;
+      osc.start(start);
+      osc.stop(end);
     } catch(e) {}
+  }
+
+  function microphoneOpenBeep() {
+    // Kurzer, etwas deutlicherer Startton.
+    tone(620, 0.18, 120);
+  }
+
+  function confirmationBeep() {
+    // Deutlich anderer und kräftigerer Doppelton: Bewertung wurde wirklich gespeichert.
+    tone(900, 0.32, 140);
+    tone(1320, 0.32, 180, 150);
+  }
+
+  function normalizeRecognitionText(text) {
+    return String(text || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g,'')
+      .replace(/[^a-záéíóúüñ]+/gi,' ')
+      .trim();
+  }
+
+  function ratingFromTranscript(text) {
+    const t = normalizeRecognitionText(text);
+    const tokens = t.split(/\s+/).filter(Boolean);
+    const map = {uno:1, dos:2, tres:3, seis:4};
+    // Wenn mehrere Bewertungswörter in EINER Äußerung vorkommen, gilt das zuletzt gesprochene.
+    // Dadurch bleiben Fülllaute/zusätzliche Wörter unschädlich und eine direkte Selbstkorrektur funktioniert.
+    for (let i=tokens.length-1;i>=0;i--) {
+      if (map[tokens[i]]) return map[tokens[i]];
+    }
+    return 0;
+  }
+
+  function ratingFromSpeechEvent(e) {
+    // Alle gelieferten Resultate und Alternativen in der vom Browser gelieferten Reihenfolge prüfen.
+    for (let ri = e.resultIndex || 0; ri < e.results.length; ri++) {
+      const result = e.results[ri];
+      for (let ai = 0; ai < result.length; ai++) {
+        const r = ratingFromTranscript(result[ai].transcript);
+        if (r) return {rating:r, transcript:result[ai].transcript};
+      }
+    }
+    return null;
   }
 
   function setupRecognition() {
@@ -510,88 +588,114 @@
     recognition.maxAlternatives = 5;
 
     recognition.onresult = e => {
-      const texts = [];
-      for (let i=0;i<e.results[0].length;i++) texts.push(e.results[0][i].transcript.toLowerCase().trim());
-      const joined = texts.join(' | ');
-      $('status').textContent = `Erkannt: ${texts[0]}`;
-      const map = [
-        {r:1, re:/\b(uno)\b/},
-        {r:2, re:/\b(dos)\b/},
-        {r:3, re:/\b(tres)\b/},
-        {r:4, re:/\b(seis)\b/}
-      ];
-      const hit = map.find(x => x.re.test(joined));
-
-      if (hit) {
-        ratingAttempt = 0;
-        confirmationBeep();
-        setTimeout(() => rate(hit.r), 180);
-      } else {
-        listening = false;
-        if (ratingAttempt < 2) {
-          setTimeout(startRecognition, 500);
-        } else {
-          ratingAttempt = 0;
-          $('status').textContent = 'Zweimal nicht erkannt – Karte wird übersprungen.';
-          setTimeout(nextRandomWord, 500);
-        }
+      const hit = ratingFromSpeechEvent(e);
+      if (hit && ratingWindowActive && !ratingAccepted) {
+        ratingAccepted = true;
+        $('status').textContent = `Erkannt: ${hit.transcript}`;
+        const rating = hit.rating;
+        // Fenster schließen, dann Bewertung speichern; rate() spielt danach den Quittungston.
+        stopRecognitionSession();
+        rate(rating, true);
+      } else if (ratingWindowActive && !ratingAccepted) {
+        $('status').textContent = 'Kein Bewertungswort erkannt – ich höre weiter …';
       }
     };
 
     recognition.onerror = e => {
       listening = false;
-      if (paused || !$('voiceRating').checked) return;
-
+      if (!ratingWindowActive || ratingAccepted || paused || !$('voiceRating').checked) return;
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        stopRatingWindow();
         $('status').textContent = 'Mikrofonzugriff nicht erlaubt.';
         return;
       }
-
-      if (ratingAttempt < 2) {
-        setTimeout(startRecognition, 500);
-      } else {
-        ratingAttempt = 0;
-        $('status').textContent = 'Zweimal nicht erkannt – Karte wird übersprungen.';
-        setTimeout(nextRandomWord, 500);
-      }
+      scheduleRecognitionRestart();
     };
 
     recognition.onend = () => {
       listening = false;
-      if (paused || !$('voiceRating').checked || !current) return;
-
-      // Manche Android-Browser beenden einen Erkennungsversuch ohne
-      // onresult/onerror. Auch das zählt als fehlgeschlagener Versuch.
-      if (ratingAttempt === 1) {
-        setTimeout(startRecognition, 500);
-      } else if (ratingAttempt >= 2) {
-        ratingAttempt = 0;
-        $('status').textContent = 'Zweimal nicht erkannt – Karte wird übersprungen.';
-        setTimeout(nextRandomWord, 500);
-      }
+      if (!ratingWindowActive || ratingAccepted || paused || !$('voiceRating').checked || !current) return;
+      scheduleRecognitionRestart();
     };
   }
 
-  function startRecognition() {
-    if (paused || listening || !$('voiceRating').checked || !recognition) return;
-    ratingAttempt++;
-    listening = true;
-    $('status').textContent = ratingAttempt === 1
-      ? 'Sag uno, dos, tres oder seis …'
-      : 'Nochmal: uno, dos, tres oder seis …';
-    try { recognition.start(); }
-    catch(e) { listening = false; }
+  function beginRatingWindow() {
+    stopRatingWindow();
+    if (paused || !$('voiceRating').checked || !recognition || !current) return;
+    ratingWindowActive = true;
+    ratingAccepted = false;
+    const durationMs = Math.max(6000, Number($('ratingWindow').value || 12) * 1000);
+    $('status').textContent = 'Sag uno, dos, tres oder seis …';
+    microphoneOpenBeep();
+    startRecognitionSession();
+    ratingWindowTimer = setTimeout(() => {
+      if (!ratingWindowActive || ratingAccepted) return;
+      stopRatingWindow();
+      $('status').textContent = 'Keine Bewertung erkannt – Karte bleibt fällig.';
+      setTimeout(nextRandomWord, 500);
+    }, durationMs);
   }
 
-  function stopRecognition() {
+  function scheduleRecognitionRestart() {
+    if (recognitionRestartTimer) clearTimeout(recognitionRestartTimer);
+    recognitionRestartTimer = setTimeout(() => {
+      recognitionRestartTimer = null;
+      if (ratingWindowActive && !ratingAccepted && !paused) startRecognitionSession();
+    }, 180);
+  }
+
+  function startRecognitionSession() {
+    if (paused || listening || !ratingWindowActive || ratingAccepted || !$('voiceRating').checked || !recognition) return;
+    listening = true;
+    try { recognition.start(); }
+    catch(e) {
+      listening = false;
+      scheduleRecognitionRestart();
+    }
+  }
+
+  function stopRecognitionSession() {
     if (recognition && listening) {
       try { recognition.abort(); } catch(e) {}
     }
     listening = false;
   }
 
+  function stopRatingWindow() {
+    ratingWindowActive = false;
+    if (ratingWindowTimer) { clearTimeout(ratingWindowTimer); ratingWindowTimer = null; }
+    if (recognitionRestartTimer) { clearTimeout(recognitionRestartTimer); recognitionRestartTimer = null; }
+    stopRecognitionSession();
+  }
+
+  function stopRecognition() {
+    stopRatingWindow();
+  }
+
+  async function requestWakeLock() {
+    if (!('wakeLock' in navigator) || paused) return;
+    try {
+      if (!wakeLock) {
+        wakeLock = await navigator.wakeLock.request('screen');
+        wakeLock.addEventListener('release', () => { wakeLock = null; });
+      }
+    } catch(e) {}
+  }
+
+  async function releaseWakeLock() {
+    if (!wakeLock) return;
+    try { await wakeLock.release(); } catch(e) {}
+    wakeLock = null;
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && !paused) requestWakeLock();
+  });
+
   $('startBtn').addEventListener('click', () => {
     paused = false;
+    getAudioContext();
+    requestWakeLock();
     speechSynthesis.resume();
     if (!current || $('kind').textContent === 'Fertig' || $('front').textContent === 'Start drücken') nextRandomWord();
     else runCard(current);
@@ -606,7 +710,11 @@
     current = null;
     reviewMode = true;
     reviewPool = shuffle(allVocabCardsForReview());
+    sessionRetryQueue = [];
+    sessionWordCounter = 0;
     paused = false;
+    getAudioContext();
+    requestWakeLock();
     $('status').textContent = 'Extra-Wiederholung – SRS bleibt unverändert.';
     nextRandomWord();
   });
@@ -616,14 +724,16 @@
     runningToken++;
     stopRecognition();
     speechSynthesis.cancel();
+    releaseWakeLock();
     $('status').textContent = 'Pausiert';
   });
 
   $('resetBtn').addEventListener('click', () => {
     if (!confirm('Wirklich den gesamten Lernstand zurücksetzen?')) return;
-    state = {}; reviewMode=false; reviewPool=[];
+    state = {}; reviewMode=false; reviewPool=[]; sessionRetryQueue=[]; sessionWordCounter=0;
     localStorage.removeItem(STATE_KEY);
     current = null; queue = []; groupQueue = []; paused = true; runningToken++;
+    releaseWakeLock();
     updateDue();
     $('kind').textContent='Bereit'; $('front').textContent='Start drücken'; $('answer').textContent=''; $('status').textContent='';
   });
@@ -673,6 +783,7 @@
     const esI=findHeader(h,['Spanisch','ES','Spanish']);
     const groupI=findHeader(h,['Gruppe','Group']);
     const groupPosI=findHeader(h,['Gruppenposition','Group Position','GroupPosition']);
+    const stackI=findHeader(h,['Stapel','Stack','Deck']);
     if(deI<0 || esI<0) throw new Error('Spalten „Deutsch/DE“ und „Spanisch/ES“ nicht gefunden.');
 
     const pairs=[];
@@ -690,7 +801,9 @@
       const examples=pairs.map(([di,si])=>({de:(r[di]||'').trim(),es:(r[si]||'').trim()})).filter(x=>x.de&&x.es);
       const group=groupI>=0 ? (r[groupI]||'').trim() : '';
       const groupPos=groupPosI>=0 ? Number((r[groupPosI]||'').trim()) || 0 : 0;
-      out.push({id:`imp-${Date.now()}-${idx}`,de,es,examples,group,groupPos});
+      const rawStack=stackI>=0 ? Number((r[stackI]||'').trim()) : 1;
+      const stack=[1,2,3,4].includes(rawStack) ? rawStack : 1;
+      out.push({id:`imp-${Date.now()}-${idx}`,de,es,examples,group,groupPos,stack});
     });
     if(!out.length) throw new Error('Keine gültigen Vokabelzeilen gefunden.');
     return out;
@@ -701,7 +814,8 @@
     try {
       const text=await f.text();
       const imported=importText(text);
-      data=imported; state={}; current=null; queue=[]; groupQueue=[]; paused=true; runningToken++;
+      data=imported; state={}; current=null; queue=[]; groupQueue=[]; sessionRetryQueue=[]; sessionWordCounter=0; paused=true; runningToken++;
+      releaseWakeLock();
       save();
       $('status').textContent=`${imported.length} Vokabeln importiert.`;
       $('kind').textContent='Bereit'; $('front').textContent='Start drücken'; $('answer').textContent='';
